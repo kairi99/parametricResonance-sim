@@ -1,0 +1,103 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>scene demo</title>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>
+html,body{margin:0;height:100%;background:#0f172a;color:#e2e8f0;font:13px sans-serif}
+#c{position:absolute;inset:0}
+#ui{position:absolute;top:8px;left:8px;display:flex;gap:6px;flex-wrap:wrap;z-index:2}
+button{background:#1e293b;color:#e2e8f0;border:1px solid #475569;padding:4px 8px;border-radius:4px;cursor:pointer}
+#err{position:absolute;bottom:0;left:0;color:#f87171;white-space:pre;z-index:3}
+</style></head><body>
+<div id="c"></div>
+<div id="ui"></div><div id="err"></div>
+<script>window.onerror=(m,s,l)=>{document.getElementById('err').textContent+=m+' @'+l+'\n'};
+window.addEventListener('unhandledrejection',e=>{document.getElementById('err').textContent+=String(e.reason)+'\n'});</script>
+<script type="module">
+import { createScene } from '../js/scene.js';
+const qs = new URLSearchParams(location.search);
+const S = {
+  case: qs.get('case') === '1', nuts: +(qs.get('nuts') ?? 0), cord: +(qs.get('cord') ?? 0),
+  slack: qs.get('slack') === '1', t: qs.has('t') ? +qs.get('t') : null,
+};
+const scene = createScene(document.getElementById('c'));
+function params() {
+  return { phoneLength: 0.155, phoneWidth: 0.072, phoneThickness: 0.0082, caseMass: S.case ? 0.03 : 0,
+    attachmentOffset: S.case ? 0.04 : 0, nutsPerSide: S.case ? S.nuts : 0, cordLength: S.cord,
+    springL0: 0.19, springK: 10 };
+}
+function derived(p) {
+  const d = p.phoneLength / 2 + p.attachmentOffset;
+  const R0 = p.springL0 + p.cordLength + d;
+  return { d, R0, Req: R0 + 0.06, M: 0.2 };
+}
+let P, D;
+function rb() { P = params(); D = derived(P); scene.rebuild(P, D); scene.clearTrail(); }
+rb();
+scene.setShowEquilibrium(true);
+const ui = document.getElementById('ui');
+function btn(label, fn) { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; ui.appendChild(b); }
+btn('case on/off', () => { S.case = !S.case; rb(); });
+for (const n of [0, 5, 10]) btn('nuts ' + n, () => { S.nuts = n; S.case = true; rb(); });
+for (const c of [0, 0.15]) btn('cord ' + c, () => { S.cord = c; rb(); });
+btn('slack', () => { S.slack = !S.slack; });
+btn('trail', (() => { let on = true; return () => scene.setTrail(on = !on); })());
+btn('reset cam', () => scene.resetCamera());
+const rock = qs.get('rock') === '1';
+const logDiv = document.createElement('div');
+logDiv.id = 'log'; logDiv.style.cssText = 'position:absolute;bottom:20px;left:8px;z-index:2;font:11px monospace;white-space:pre;color:#93c5fd';
+document.body.appendChild(logDiv);
+const logLines = [];
+function log(m) { logLines.push(m); if (logLines.length > 6) logLines.shift(); logDiv.textContent = logLines.join('\n'); }
+let drag = null;   // fake COM [X,Y,Z] while dragging / after drop
+const fmt = a => '[' + a.map(v => v.toFixed(3)).join(', ') + ']';
+scene.setPlacementHandlers({
+  onStart() { drag = drag || [0, 0, -D.Req]; log('onStart'); },
+  onDrag(p) { drag = p; log('onDrag ' + fmt(p)); },
+  onEnd(p) { drag = p; log('onEnd ' + fmt(p)); setTimeout(() => { drag = null; }, 1500); },
+});
+window.__scene = scene;
+const t0 = performance.now();
+function loop() {
+  const t = S.t ?? (performance.now() - t0) / 1000;
+  const amp = S.slack ? 0.1 : 0.04;
+  let ell = D.Req + amp * Math.cos(5 * t);
+  if (qs.get('slack') === '1' && S.t !== null) ell = D.R0 - 0.5 * Math.max(S.cord, 0.02);
+  const th = 0.4 * Math.sin(3 * t), ph = 0.5 * Math.sin(0.4 * t) + 0.2;
+  const sx = Math.sin(th);
+  let q = [ell * sx * Math.cos(ph), ell * sx * Math.sin(ph), -ell * Math.cos(th)];
+  if (drag) { q = drag; ell = Math.hypot(q[0], q[1], q[2]); }
+  const slack = ell < D.R0;
+  // spring direction: pivot->COM direction (fake); body orientation = line orientation + rocking tilt
+  const rl = Math.hypot(q[0], q[1], q[2]);
+  const e = [q[0] / rl, q[1] / rl, q[2] / rl];
+  // body +Y = -e rotated about world -Y by `tilt`; build via rotation about -Y of the aligned frame
+  const tilt = (rock && !drag) ? 0.5 * Math.sin(7.3 * t) : 0;
+  // aligned frame: Y_b = -e, Z_b = (world -Y) perpendicular to Y_b
+  let yb = [-e[0], -e[1], -e[2]];
+  let zb = [0, -1, 0]; const dz = zb[0]*yb[0]+zb[1]*yb[1]+zb[2]*yb[2];
+  zb = [zb[0]-dz*yb[0], zb[1]-dz*yb[1], zb[2]-dz*yb[2]]; const zl = Math.hypot(...zb); zb = zb.map(v => v / zl);
+  const xb = [yb[1]*zb[2]-yb[2]*zb[1], yb[2]*zb[0]-yb[0]*zb[2], yb[0]*zb[1]-yb[1]*zb[0]];
+  // rotation about world -Y by tilt: Rm = Ry(-tilt)
+  const c = Math.cos(tilt), sn = Math.sin(tilt); // Ry(-a): x' = c x - s z ; z' = s x + c z  (a=tilt)
+  const rot = v => [c * v[0] - sn * v[2], v[1], sn * v[0] + c * v[2]];
+  const X = rot(xb), Yv = rot(yb), Zv = rot(zb);
+  const m00 = X[0], m01 = Yv[0], m02 = Zv[0], m10 = X[1], m11 = Yv[1], m12 = Zv[1], m20 = X[2], m21 = Yv[2], m22 = Zv[2];
+  const tr = m00 + m11 + m22; let qw, qx, qy, qz;
+  if (tr > 0) { const s2 = Math.sqrt(tr + 1) * 2; qw = s2 / 4; qx = (m21 - m12) / s2; qy = (m02 - m20) / s2; qz = (m10 - m01) / s2; }
+  else if (m00 > m11 && m00 > m22) { const s2 = Math.sqrt(1 + m00 - m11 - m22) * 2; qw = (m21 - m12) / s2; qx = s2 / 4; qy = (m01 + m10) / s2; qz = (m02 + m20) / s2; }
+  else if (m11 > m22) { const s2 = Math.sqrt(1 + m11 - m00 - m22) * 2; qw = (m02 - m20) / s2; qx = (m01 + m10) / s2; qy = s2 / 4; qz = (m12 + m21) / s2; }
+  else { const s2 = Math.sqrt(1 + m22 - m00 - m11) * 2; qw = (m10 - m01) / s2; qx = (m02 + m20) / s2; qy = (m12 + m21) / s2; qz = s2 / 4; }
+  const quat = [qw, qx, qy, qz];
+  const attach = [q[0] + D.d * Yv[0], q[1] + D.d * Yv[1], q[2] + D.d * Yv[2]];
+  const L = Math.hypot(...attach);
+  const springLength = slack ? P.springL0 : Math.max(L - P.cordLength, P.springL0);
+  scene.update({ q, attach, quat, ell, slack, springLength, tilt, params: P, derived: D });
+  requestAnimationFrame(loop);
+}
+loop();
+</script></body></html>

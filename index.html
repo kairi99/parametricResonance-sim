@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smartphone Elastic Pendulum — 3D Simulator</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./css/style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<script type="module" src="./js/main.js"></script>
+</head>
+<body>
+<header id="topbar">
+  <button id="btn-panel" class="icon-btn" title="Show / hide control panel" aria-label="Toggle control panel">☰</button>
+  <div class="titles">
+    <h1>Smartphone Elastic Pendulum — 3D Simulator</h1>
+    <p class="subtitle">Spring–swing coupling and 2:1 autoparametric resonance of a hanging phone</p>
+  </div>
+  <button id="btn-help" class="icon-btn" title="About the physics" aria-label="About">?</button>
+</header>
+<div id="error-banner" hidden></div>
+<div id="app">
+  <aside id="panel">
+    <section id="tuning"></section>
+    <div id="controls"></div>
+  </aside>
+  <main id="center">
+    <div id="viewport">
+      <div id="readout" class="mono"></div>
+      <div id="vp-tools">
+        <button id="vp-play" class="btn">Pause</button>
+        <button id="vp-reset" class="btn">Reset</button>
+        <button id="vp-cam" class="btn">Reset view</button>
+      </div>
+      <div id="toast" hidden></div>
+    </div>
+    <div id="charts">
+      <div class="chartbox c-disp"><canvas id="ch-disp"></canvas></div>
+      <div class="chartbox c-energy"><canvas id="ch-energy"></canvas></div>
+      <div class="chartbox c-xy"><canvas id="ch-xy"></canvas></div>
+      <div class="chartbox c-diag"><canvas id="ch-diag"></canvas></div>
+    </div>
+  </main>
+</div>
+<dialog id="help">
+  <h2>About this simulator</h2>
+  <p>A phone hangs from a coil spring (optionally via a cord, optionally in a case whose horns carry hex-nut ballast). It can bounce along the spring (radial mode, frequency <i>f<sub>r</sub></i>) and swing like a pendulum (frequency <i>f<sub>s</sub></i>). The two modes are nonlinearly coupled: when the spring is stretched the pendulum is longer, and swinging adds a centripetal pull on the spring.</p>
+  <p>When <i>f<sub>r</sub></i> = 2 <i>f<sub>s</sub></i> the coupling is resonant (autoparametric, 2:1 resonance): energy flows back and forth between bouncing and swinging. The de Sousa parameter <i>f</i> = <i>f<sub>s</sub></i>/<i>f<sub>r</sub></i> equals 0.25 at exact resonance.</p>
+  <h3>Two models</h3>
+  <p><b>Rigid body (realistic).</b> The phone is a 3D rigid body. Its inertia tensor is built from the phone, the case and the two nut stacks (plus extra mass and a share of the spring mass). The eyebolt is a frictionless ball joint: spring and cord pull at the attachment point and exert no moment. Besides bouncing and swinging, the phone can therefore rock about the eyebolt (an extra in-plane mode, <i>f</i><sub>rock</sub>) and spin. Rotation is damped by a separate rotational damping term (not yet calibrated against data). Here <i>f<sub>s</sub></i> is the lower in-plane swing mode, used for the 2:1 ratio.</p>
+  <p><b>Point mass (methods doc).</b> The phone is a point mass at its centre of mass, as in the methods document: no rocking, no spin, the spring axis always passes through the mass.</p>
+  <p>Energy is split into <i>E<sub>r</sub></i> (radial), <i>E<sub>s</sub></i> (swing), <i>E<sub>c</sub></i> (coupling) and, for the rigid body, <i>E</i><sub>rot</sub>; their sum <i>E</i><sub>rel</sub> is conserved without damping. The partition π<sub>r</sub> = <i>E<sub>r</sub></i>/(<i>E<sub>r</sub></i>+<i>E<sub>s</sub></i>) shows who holds the energy. The optional cord is massless, inextensible and may go slack (flagged SLACK). Damping is linear, quadratic or off.</p>
+  <h3>Start position</h3>
+  <p>Drag the phone in the 3D view to place it (the simulation pauses while you drag and restarts from the release point; the yellow marker shows the start). Or enter it numerically: Polar (stretch and angles) or Cartesian (offsets from equilibrium). For the rigid body you can also tilt the phone away from the spring line and give it initial rocking and spin rates; initial velocities are in the collapsible sub-section. Presets cover pure bounce, pure swing, mixed, rocking only and a sideways pull.</p>
+  <p>Use the tuning buttons to retune to 2:1 with cord length, nut ballast or spring constant. The lab dataset is 7.7% detuned.</p>
+  <form method="dialog"><button class="btn">Close</button></form>
+</dialog>
+</body>
+</html>
