@@ -849,6 +849,24 @@ export function unwrapYaw(state, R) {
   return state._yawU;
 }
 
+
+// Assembly-COM acceleration and phone-frame sensor readings from the inertial reference point's acceleration.
+// ac = a_c (reference point, world), alB = body-frame angular acceleration, wB = body-frame angular velocity,
+// R = body->world rotation (row-major 9), offset of the assembly COM from the reference point is r = -s1*yh.
+// Returns { acc, accSensor, gyroSensor } with accSensor = R^T (acc - g_vec), g_vec = (0,0,-g).
+export function phoneSensors(ac0, ac1, ac2, alB, wB, R, s1, g) {
+  const aw = [R[0] * alB[0] + R[1] * alB[1] + R[2] * alB[2], R[3] * alB[0] + R[4] * alB[1] + R[5] * alB[2], R[6] * alB[0] + R[7] * alB[1] + R[8] * alB[2]];
+  const w = [R[0] * wB[0] + R[1] * wB[1] + R[2] * wB[2], R[3] * wB[0] + R[4] * wB[1] + R[5] * wB[2], R[6] * wB[0] + R[7] * wB[1] + R[8] * wB[2]];
+  const r = [-s1 * R[1], -s1 * R[4], -s1 * R[7]];
+  const cr = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const t = cr(aw, r), c = cr(w, cr(w, r));
+  const acc = [ac0 + t[0] + c[0], ac1 + t[1] + c[1], ac2 + t[2] + c[2]];
+  return { acc, accSensor: worldToBody(acc[0], acc[1], acc[2] + g, R), gyroSensor: [wB[0], wB[1], wB[2]] };
+}
+export function worldToBody(x, y, z, R) {
+  return [R[0] * x + R[3] * y + R[6] * z, R[1] * x + R[4] * y + R[7] * z, R[2] * x + R[5] * y + R[8] * z];
+}
+
 export function observablesElastic(state, p, dv) {
   const cx = dv.el, y = state.y, N = cx.N;
   const parts = energyParts(y, cx);
@@ -898,6 +916,10 @@ export function observablesElastic(state, p, dv) {
   const phiR = Math.atan2(-xDot / dv.omegaR, x), phiS = Math.atan2(-alphaDot / dv.omegaS, alpha);
   const dPhi = wrapPi(phiR - 2 * phiS);
   const ampR = Math.sqrt(x * x + (xDot / dv.omegaR) ** 2), ampS = Math.sqrt(alpha * alpha + (alphaDot / dv.omegaS) ** 2);
+  bindDamping(cx, p);
+  deriv(y, cx.k1, cx); // exact instantaneous derivative at the current state (k1 is free between steps)
+  const pbo = 13 * cx.nf;
+  const sens = phoneSensors(cx.k1[pbo + 3], cx.k1[pbo + 4], cx.k1[pbo + 5], [cx.k1[pbo + 10], cx.k1[pbo + 11], cx.k1[pbo + 12]], omega, Rm, cx.s1, g);
   const yaw = unwrapYaw(state, Rm);
   const dist = Math.hypot(cx.X[3 * N], cx.X[3 * N + 1], cx.X[3 * N + 2]);
   return {
@@ -906,5 +928,6 @@ export function observablesElastic(state, p, dv) {
     attach, quat, tilt, tiltY, omega,
     spring: { nodes, phase }, yaw, twistTotal: psiSum - psiEqSum,
     EspringKin: parts.KEnodes, EspringEl: parts.U,
+    acc: sens.acc, accSensor: sens.accSensor, gyroSensor: sens.gyroSensor,
   };
 }

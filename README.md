@@ -118,7 +118,7 @@ The "Tuning" panel shows derived values, a resonance gauge (0.8–1.2, green ban
 | Initial velocity vx0, vy0, vz0 | 0 | ±50 cm/s |
 | Speed / chart window | 1× / 30 s | 0.1–5× / 10–120 s |
 
-Any parameter change restarts the simulation at t = 0. "Copy share link" encodes all parameters in the URL query string (restored on load); `?paused` starts paused. "Export CSV" downloads the history since the last reset (two leading comment lines `# model=…` and `# params={…}`, then t, X, Y, Z, x, alpha, beta, Er, Es, Ec, Erel, Emech, dPhi, partitionR, tilt, tiltY, Erot, qw, qx, qy, qz, attachX, attachY, attachZ, yaw, twistTotal, EspringKin, EspringEl; SI units and radians, capped at 200 000 rows).
+Any parameter change restarts the simulation at t = 0. "Copy share link" encodes all parameters in the URL query string (restored on load); `?paused` starts paused; `chart1=disp|acc|sensor|gyro` selects the first chart's view. "Export CSV" downloads the history since the last reset (two leading comment lines `# model=…` and `# params={…}`, then t, X, Y, Z, x, alpha, beta, Er, Es, Ec, Erel, Emech, dPhi, partitionR, tilt, tiltY, Erot, qw, qx, qy, qz, attachX, attachY, attachZ, yaw, twistTotal, EspringKin, EspringEl, ax, ay, az, accX, accY, accZ, gyroX, gyroY, gyroZ; SI units and radians, capped at 200 000 rows).
 
 ## Literature
 
@@ -127,3 +127,7 @@ A. E. H. Love, *A Treatise on the Mathematical Theory of Elasticity* (4th ed., �
 ## Credits
 
 Physics model from the project's methods document (de Sousa-style control parameter for the elastic pendulum). iPhone 17 dimensions (71.5 × 149.6 × 7.95 mm, 177 g) from Apple's tech specs. Three.js (MIT) via jsDelivr.
+
+## Phone sensor views
+
+The first chart has a selector with four views: Displacements; Accelerations (world), the exact acceleration of the phone's centre of mass (`observables().acc`, evaluated from the equations of motion, not by differencing); Phone accelerometer (`accSensor = Rᵀ(a − g_vec)`, `g_vec = (0,0,−g)`); and Phone gyroscope (`gyroSensor`, body-frame angular velocity in rad/s). Axes follow phyphox: x to the right edge, y toward the top of the phone (the spring attachment in this simulator), z out of the screen. The accelerometer reads specific force and therefore includes gravity: at rest it shows +g along the upward axis (y when hanging), comparable with phyphox "acceleration with g". All four views are recorded in parallel, so switching keeps the history; the CSV export contains `ax,ay,az,accX,accY,accZ,gyroX,gyroY,gyroZ`.

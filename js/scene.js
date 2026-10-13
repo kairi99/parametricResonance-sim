@@ -96,17 +96,18 @@ export function createScene(container, options = {}) {
   springMesh.frustumCulled = false;
   scene.add(springMesh);
   let SPN = 0;                       // samples (segments) along the centreline
-  let spPos, spNor, spCol, spCl, spHp, spRd, spArc, spPh;   // per-sample scratch / attribute arrays
+  let spPos, spNor, spCol, spCl, spHp, spRd, spArc, spPh, spCos;   // per-sample scratch / attribute arrays
   let spCoilR = SPRING_COIL_R, spWireR = 0.0006, spTurns = SPRING_TURNS;
   let spNodes = new Float64Array(6), spPhase = new Float64Array(2), spCum = new Float64Array(2);
   const spLastNode = [0, 0, 0];
+  let spDirty = true, spKeyM = -1, spKeyN = new Float64Array(6), spKeyP = new Float64Array(2);
   function allocSpring(turns) {
     spTurns = turns;
     SPN = Math.min(SPRING_MAX_SAMPLES, Math.ceil(turns * SPRING_PER_TURN * 1.15) + 40);
     const nv = (SPN + 1) * SPRING_SIDES;
     spPos = new Float32Array(nv * 3); spNor = new Float32Array(nv * 3); spCol = new Float32Array(nv * 3);
     spCl = new Float64Array((SPN + 1) * 3); spHp = new Float64Array((SPN + 1) * 3); spRd = new Float64Array((SPN + 1) * 3);
-    spArc = new Float64Array(SPN + 1); spPh = new Float64Array(SPN + 1);
+    spArc = new Float64Array(SPN + 1); spPh = new Float64Array(SPN + 1); spCos = new Float64Array(SPN + 1);
     const idx = new Uint32Array(SPN * SPRING_SIDES * 6);
     let o = 0;
     for (let k = 0; k < SPN; k++) for (let j = 0; j < SPRING_SIDES; j++) {
@@ -126,17 +127,19 @@ export function createScene(container, options = {}) {
 
   const smooth01 = x => x * x * (3 - 2 * x);
   // Fill the spring tube from nodes (three frame, 3M) and coil phase (M).
+  const RING_C = new Float64Array(SPRING_SIDES), RING_S = new Float64Array(SPRING_SIDES);
+  for (let j = 0; j < SPRING_SIDES; j++) { const th = (j / SPRING_SIDES) * 6.283185307179586; RING_C[j] = Math.cos(th); RING_S[j] = Math.sin(th); }
   function buildSpring(nd, ph, M) {
     // centripetal Catmull-Rom (Barry-Goldman) through nodes; samples uniform in chord length
     if (spCum.length < M) spCum = new Float64Array(M);
     let total = 0; spCum[0] = 0;
     for (let i = 0; i < M - 1; i++) {
-      total += Math.hypot(nd[3 * i + 3] - nd[3 * i], nd[3 * i + 4] - nd[3 * i + 1], nd[3 * i + 5] - nd[3 * i + 2]) + 1e-12;
+      { const ex = nd[3 * i + 3] - nd[3 * i], ey = nd[3 * i + 4] - nd[3 * i + 1], ez = nd[3 * i + 5] - nd[3 * i + 2]; total += Math.sqrt(ex * ex + ey * ey + ez * ez) + 1e-12; }
       spCum[i + 1] = total;
     }
     let seg = -1, t0 = 0, t1 = 0, t2 = 0, t3 = 0;
     let p0x = 0, p0y = 0, p0z = 0, p1x = 0, p1y = 0, p1z = 0, p2x = 0, p2y = 0, p2z = 0, p3x = 0, p3y = 0, p3z = 0;
-    const sq = (ax, ay, az, bx, by, bz) => Math.sqrt(Math.hypot(bx - ax, by - ay, bz - az)) + 1e-6;
+    const sq = (ax, ay, az, bx, by, bz) => Math.sqrt(Math.sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay) + (bz - az) * (bz - az))) + 1e-6; // OPT-S1 hypot->sqrt
     for (let k = 0; k <= SPN; k++) {
       const s = total * k / SPN;
       let i = seg < 0 ? 0 : seg;
@@ -170,24 +173,24 @@ export function createScene(container, options = {}) {
     // arc length
     spArc[0] = 0;
     for (let k = 1; k <= SPN; k++)
-      spArc[k] = spArc[k - 1] + Math.hypot(spCl[3 * k] - spCl[3 * k - 3], spCl[3 * k + 1] - spCl[3 * k - 2], spCl[3 * k + 2] - spCl[3 * k - 1]);
+      { const ex = spCl[3 * k] - spCl[3 * k - 3], ey = spCl[3 * k + 1] - spCl[3 * k - 2], ez = spCl[3 * k + 2] - spCl[3 * k - 1]; spArc[k] = spArc[k - 1] + Math.sqrt(ex * ex + ey * ey + ez * ez); }
     const A = spArc[SPN];
     // parallel transport frame -> helix points + radial directions
     let nx = 1, ny = 0, nz = 0;
     for (let k = 0; k <= SPN; k++) {
       const ka = Math.max(k - 1, 0), kb = Math.min(k + 1, SPN);
       let tx = spCl[3 * kb] - spCl[3 * ka], ty = spCl[3 * kb + 1] - spCl[3 * ka + 1], tz = spCl[3 * kb + 2] - spCl[3 * ka + 2];
-      const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+      const tl = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1; tx /= tl; ty /= tl; tz /= tl;
       let dn = nx * tx + ny * ty + nz * tz;
       nx -= dn * tx; ny -= dn * ty; nz -= dn * tz;
-      let nl = Math.hypot(nx, ny, nz);
+      let nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
       if (nl < 1e-6) { nx = 0; ny = 0; nz = 1; dn = nz * tz; nx -= dn * tx; ny -= dn * ty; nz -= dn * tz; nl = Math.hypot(nx, ny, nz) || 1; }
       nx /= nl; ny /= nl; nz /= nl;
       const bx = ty * nz - tz * ny, by = tz * nx - tx * nz, bz = tx * ny - ty * nx;
       const a = spArc[k];
       const x1 = Math.min(Math.max((a - SPRING_LEAD) / SPRING_RAMP, 0), 1), x2 = Math.min(Math.max((A - a - SPRING_LEAD) / SPRING_RAMP, 0), 1);
       const r = spCoilR * smooth01(Math.min(x1, x2));
-      const cp = Math.cos(spPh[k]), sp = Math.sin(spPh[k]);
+      const cp = Math.cos(spPh[k]), sp = Math.sin(spPh[k]); spCos[k] = cp; // OPT-S2
       const rx = cp * nx + sp * bx, ry = cp * ny + sp * by, rz = cp * nz + sp * bz;
       spRd[3 * k] = rx; spRd[3 * k + 1] = ry; spRd[3 * k + 2] = rz;
       spHp[3 * k] = spCl[3 * k] + r * rx; spHp[3 * k + 1] = spCl[3 * k + 1] + r * ry; spHp[3 * k + 2] = spCl[3 * k + 2] + r * rz;
@@ -197,18 +200,18 @@ export function createScene(container, options = {}) {
     for (let k = 0; k <= SPN; k++) {
       const ka = Math.max(k - 1, 0), kb = Math.min(k + 1, SPN);
       let tx = spHp[3 * kb] - spHp[3 * ka], ty = spHp[3 * kb + 1] - spHp[3 * ka + 1], tz = spHp[3 * kb + 2] - spHp[3 * ka + 2];
-      const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+      const tl = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1; tx /= tl; ty /= tl; tz /= tl;
       let rx = spRd[3 * k], ry = spRd[3 * k + 1], rz = spRd[3 * k + 2];
       const dn = rx * tx + ry * ty + rz * tz;
       rx -= dn * tx; ry -= dn * ty; rz -= dn * tz;
-      const rl = Math.hypot(rx, ry, rz) || 1; rx /= rl; ry /= rl; rz /= rl;
+      const rl = Math.sqrt(rx * rx + ry * ry + rz * rz) || 1; rx /= rl; ry /= rl; rz /= rl;
       const bx = ty * rz - tz * ry, by = tz * rx - tx * rz, bz = tx * ry - ty * rx;
       // marker paint where the coil angle passes phi = 0 (shows twist as a sideways shift of the dots)
-      const c = Math.cos(spPh[k]);
+      const c = spCos[k];
       const m = c > 0.9 ? smooth01(Math.min((c - 0.9) / 0.07, 1)) : 0;
       const cr = 0.84 + 0.16 * m, cg = 0.86 - 0.66 * m, cb = 0.88 - 0.68 * m;
       for (let j = 0; j < SPRING_SIDES; j++) {
-        const th = (j / SPRING_SIDES) * 6.283185307179586, ct = Math.cos(th), st = Math.sin(th);
+        const ct = RING_C[j], st = RING_S[j]; // OPT-S3
         const ox = ct * rx + st * bx, oy = ct * ry + st * by, oz = ct * rz + st * bz;
         const v = (k * SPRING_SIDES + j) * 3;
         spPos[v] = spHp[3 * k] + w * ox; spPos[v + 1] = spHp[3 * k + 1] + w * oy; spPos[v + 2] = spHp[3 * k + 2] + w * oz;
@@ -324,7 +327,7 @@ export function createScene(container, options = {}) {
     {
       const turns = Math.max(1, D.activeTurns ?? SPRING_TURNS);
       spCoilR = (D.coilDiameter ?? 2 * SPRING_COIL_R) / 2;
-      spWireR = Math.max((D.wireDiameter ?? 0.00082) / 2, 0.0006);
+      spWireR = Math.max((D.wireDiameter ?? 0.00082) / 2, 0.0006); spDirty = true;
       if (Math.abs(turns - spTurns) > 1e-9) allocSpring(turns);
     }
 
@@ -484,7 +487,17 @@ export function createScene(container, options = {}) {
         nd = spNodes; ph = spPhase;
       }
       spLastNode[0] = nd[3 * M - 3]; spLastNode[1] = nd[3 * M - 2]; spLastNode[2] = nd[3 * M - 1];
-      buildSpring(nd, ph, M);
+      // OPT-S4: skip the tube rebuild when nodes/phases are bit-identical to the previous build (paused, or no new physics step)
+      let same = !spDirty && spKeyM === M;
+      if (same) { for (let i = 0; i < 3 * M; i++) if (spKeyN[i] !== nd[i]) { same = false; break; } }
+      if (same) { for (let i = 0; i < M; i++) if (spKeyP[i] !== ph[i]) { same = false; break; } }
+      if (!same) {
+        if (spKeyN.length < 3 * M) { spKeyN = new Float64Array(3 * M); spKeyP = new Float64Array(M); }
+        for (let i = 0; i < 3 * M; i++) spKeyN[i] = nd[i];
+        for (let i = 0; i < M; i++) spKeyP[i] = ph[i];
+        spKeyM = M; spDirty = false;
+        buildSpring(nd, ph, M);
+      }
       spStats.ms += performance.now() - t0p; spStats.n++;
     }
 

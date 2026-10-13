@@ -1,7 +1,7 @@
 // Elastic (spring) pendulum physics engine. Dependency-free ES module (browser + Node).
 // SI units. Pivot at origin, +Z up. q = COM position relative to pivot.
 
-import { deriveElastic, createElasticState, stepElastic, observablesElastic, unwrapYaw } from './elastic.js';
+import { deriveElastic, createElasticState, stepElastic, observablesElastic, unwrapYaw, phoneSensors, worldToBody } from './elastic.js';
 
 export const DEFAULT_PARAMS = {
   phoneMass: 0.177,
@@ -472,6 +472,40 @@ export function observables(state, params, derived) {
     const phP = Math.atan2(-yy, yz), phS = Math.atan2(ey, -ez);
     tilt = wrapPi(thP - thS); tiltY = wrapPi(phP - phS);
   }
+  let sens;
+  if (rigid) {
+    const R = rotMatrix(quat, new Float64Array(9), 0), rg = dv.rig, y = Y0;
+    const yx = R[1], yy = R[4], yz = R[7];
+    const wx = R[0] * omega[0] + R[1] * omega[1] + R[2] * omega[2];
+    const wy = R[3] * omega[0] + R[4] * omega[1] + R[5] * omega[2];
+    const wz = R[6] * omega[0] + R[7] * omega[1] + R[8] * omega[2];
+    y[0] = X + rg.s1 * yx; y[1] = Y + rg.s1 * yy; y[2] = Z + rg.s1 * yz;
+    y[3] = vx + rg.s1 * (wy * yz - wz * yy); y[4] = vy + rg.s1 * (wz * yx - wx * yz); y[5] = vz + rg.s1 * (wx * yy - wy * yx);
+    y[6] = quat[0]; y[7] = quat[1]; y[8] = quat[2]; y[9] = quat[3];
+    y[10] = omega[0]; y[11] = omega[1]; y[12] = omega[2];
+    rigidDeriv(y, KA, p, dv);
+    sens = phoneSensors(KA[3], KA[4], KA[5], [KA[10], KA[11], KA[12]], omega, R, rg.s1, g);
+  } else {
+    accel(X, Y, Z, vx, vy, vz, p, dv);
+    const a0 = acc[0], a1 = acc[1], a2 = acc[2];
+    const R = rotMatrix(quat, new Float64Array(9), 0);
+    // body frame: Y = -u, Z = normalised (-e_y + Y_y Y), X = Y x Z; w = (Ydot.Z, Zdot.X, Xdot.Y)
+    const ny = [-ux, -uy, -uz];
+    const ndot = [-udx, -udy, -udz];
+    const zr = [ny[1] * ny[0], -1 + ny[1] * ny[1], ny[1] * ny[2]];
+    const zn = Math.hypot(zr[0], zr[1], zr[2]);
+    let gyro = [0, 0, 0];
+    if (zn > 1e-6) {
+      const zrd = [ndot[1] * ny[0] + ny[1] * ndot[0], 2 * ny[1] * ndot[1], ndot[1] * ny[2] + ny[1] * ndot[2]];
+      const Xv = [R[0], R[3], R[6]], Zv = [R[2], R[5], R[8]];
+      gyro = [
+        ndot[0] * Zv[0] + ndot[1] * Zv[1] + ndot[2] * Zv[2],
+        (zrd[0] * Xv[0] + zrd[1] * Xv[1] + zrd[2] * Xv[2]) / zn,
+        -(Xv[0] * ndot[0] + Xv[1] * ndot[1] + Xv[2] * ndot[2]),
+      ];
+    }
+    sens = { acc: [a0, a1, a2], accSensor: worldToBody(a0, a1, a2 + g, R), gyroSensor: gyro };
+  }
   const Erel = Er + Es + Ec + Erot;
   const sum = Er + Es;
   const partitionR = sum > 1e-14 ? Er / sum : NaN;
@@ -486,6 +520,7 @@ export function observables(state, params, derived) {
     slack, springLength,
     Er, Es, Ec, Erel, Emech, Erot, partitionR, phiR, phiS, dPhi, ampR, ampS,
     attach, quat, tilt, tiltY, omega,
+    acc: sens.acc, accSensor: sens.accSensor, gyroSensor: sens.gyroSensor,
     spring: { nodes: new Float64Array([0, 0, 0, attach[0], attach[1], attach[2]]), phase: new Float64Array([0, 2 * Math.PI * 22]) },
     yaw: rigid ? unwrapYaw(state, rotMatrix(quat, new Float64Array(9), 0)) : 0, twistTotal: 0, EspringKin: 0, EspringEl: 0,
   };

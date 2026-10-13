@@ -41,7 +41,7 @@
       <div id="toast" hidden></div>
     </div>
     <div id="charts">
-      <div class="chartbox c-disp"><canvas id="ch-disp"></canvas></div>
+      <div class="chartbox c-disp"><canvas id="ch-disp"></canvas><select id="sel-chart1" class="chart-sel" aria-label="First chart view"></select></div>
       <div class="chartbox c-energy"><canvas id="ch-energy"></canvas></div>
       <div class="chartbox c-xy"><canvas id="ch-xy"></canvas></div>
       <div class="chartbox c-diag"><canvas id="ch-diag"></canvas></div>
@@ -58,6 +58,8 @@
   <p><b>Rigid body.</b> The phone is a 3D rigid body; the spring is an ideal massless-core linear spring (with a lumped share of its mass) acting at the eyebolt, a frictionless ball joint. The phone can rock about the eyebolt (<i>f</i><sub>rock</sub>) and spin. Here <i>f<sub>s</sub></i> is the lower in-plane swing mode.</p>
   <p><b>Point mass (methods doc).</b> The phone is a point mass at its centre of mass, as in the methods document: no rocking, no spin, the spring axis always passes through the mass.</p>
   <p>Energy is split into <i>E<sub>r</sub></i> (radial), <i>E<sub>s</sub></i> (swing), <i>E<sub>c</sub></i> (coupling; for the elastic model also the spring's internal energy) and, for rigid bodies, <i>E</i><sub>rot</sub>; their sum is conserved without damping. The partition π<sub>r</sub> = <i>E<sub>r</sub></i>/(<i>E<sub>r</sub></i>+<i>E<sub>s</sub></i>) shows who holds the energy. The optional cord is massless, inextensible and may go slack (flagged SLACK).</p>
+  <h3>Chart views and phone sensors</h3>
+  <p>The first chart has a selector: <b>Displacements</b> (stretch and angles); <b>Accelerations (world)</b>, the exact acceleration of the phone's centre of mass in world axes (a<sub>z</sub> shows the bounce); <b>Phone accelerometer</b>, what the phone's own sensor would read, comparable with phyphox "acceleration with g"; and <b>Phone gyroscope</b>, the angular velocity in phone axes (rad/s). Phone axes follow phyphox: x to the right edge, y toward the top of the phone (toward the spring attachment here), z out of the screen. The accelerometer measures specific force, <b>a</b> &minus; <b>g</b> expressed in the phone frame, so it includes gravity: at rest it reads +<i>g</i> (about 9.77 m/s²) along the axis pointing up, i.e. y when hanging. All views are recorded continuously, so switching does not lose history; the choice is stored in the share link (<code>chart1=disp|acc|sensor|gyro</code>) and all of them are in the CSV export.</p>
   <h3>Start position</h3>
   <p>Drag the phone in the 3D view to place it (the simulation pauses while you drag and restarts from the release point; the yellow marker shows the start). Or enter it numerically: Polar (stretch and angles) or Cartesian (offsets from equilibrium). For the rigid body you can also tilt the phone away from the spring line and give it initial rocking and spin rates; initial velocities are in the collapsible sub-section. Presets cover pure bounce, pure swing, mixed, rocking only and a sideways pull.</p>
   <h3>Tuning and the real resonance</h3>

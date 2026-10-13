@@ -569,3 +569,49 @@ test('E15 elastic solveForResonance robust', () => {
   r = PH.solveForResonance({ ...p, springL0: 0.19, extraMass: 5 }, 'springK');
   console.log(`  [E15] infeasible-case value=${r.value} feasible=${r.feasible}`);
 });
+
+// ======================= phone sensors: acc, accSensor, gyroSensor =======================
+{
+  const MODELS = ['point', 'rigid', 'elastic'];
+  const mk = (model, extra) => PH.withDefaults({ model, kCalibration: 'unloaded', ...(extra || {}) });
+  const clone = (s) => structuredClone(s);
+  const stepBy = (s, p, d, h) => { step(s, p, d, h); return s; };
+  const qconj = (a) => [a[0], -a[1], -a[2], -a[3]];
+  const qm = (a, b) => [a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3], a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+    a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1], a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]];
+
+  test('S1 static equilibrium: acc = 0, accelerometer = +g along body Y', () => {
+    for (const model of MODELS) {
+      const p = mk(model, { x0: 0, alpha0: 0, beta0: 0, alignPhone: 1, dampingModel: 'none' });
+      const d = PH.derive(p); const s = createState(p, d);
+      if (model !== 'elastic') advance(s, p, d, 0.01);
+      const o = observables(s, p, d);
+      for (let i = 0; i < 3; i++) near(o.acc[i], 0, 1e-8, `${model} acc${i}`);
+      near(o.accSensor[0], 0, 1e-6, model); near(o.accSensor[1], p.gravity, 1e-6, model); near(o.accSensor[2], 0, 1e-6, model);
+      for (let i = 0; i < 3; i++) near(o.gyroSensor[i], 0, 1e-8, model);
+    }
+  });
+
+  test('S2 acc equals the central finite difference of v; S3 gyro equals the orientation derivative', () => {
+    for (const model of MODELS) {
+      const p = mk(model, { x0: 0.05, alpha0: 0.08, beta0: 0.04, dampingModel: model === 'point' ? 'quadratic' : 'linear' });
+      const d = PH.derive(p), s = createState(p, d);
+      for (let k = 0; k < 400; k++) step(s, p, d, d.dt); // 0.4 s of motion
+      const h = 1e-4, o = observables(s, p, d);
+      const sp = stepBy(clone(s), p, d, h), sm = stepBy(clone(s), p, d, -h);
+      let scale = 0;
+      for (let i = 0; i < 3; i++) scale = Math.max(scale, Math.abs(o.acc[i]));
+      for (let i = 0; i < 3; i++) near(o.acc[i], (sp.v[i] - sm.v[i]) / (2 * h), 1e-4 * Math.max(scale, 1), `${model} acc${i}`);
+      // specific force consistency: accSensor = R^T (acc + g ez)
+      const R = R_(o.quat);
+      const w = [o.acc[0], o.acc[1], o.acc[2] + p.gravity];
+      for (let i = 0; i < 3; i++) near(o.accSensor[i], R[0][i] * w[0] + R[1][i] * w[1] + R[2][i] * w[2], 1e-9, `${model} sensor${i}`);
+      // gyro: body-frame rotation between t-h and t+h
+      const qOf = (st) => (model === 'point' ? observables(st, p, d).quat : st.quat);
+      const dq = qm(qconj(qOf(sm)), qOf(sp));
+      const sgn = dq[0] < 0 ? -1 : 1;
+      let gs = 0; for (let i = 0; i < 3; i++) gs = Math.max(gs, Math.abs(o.gyroSensor[i]));
+      for (let i = 0; i < 3; i++) near(o.gyroSensor[i], sgn * dq[i + 1] / h, 1e-4 * Math.max(gs, 1) + 1e-6, `${model} gyro${i}`);
+    }
+  });
+}

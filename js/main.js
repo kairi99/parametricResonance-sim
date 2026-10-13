@@ -45,9 +45,22 @@ let rows = [], sampleAcc = 0, restartTimer = null;
 
 // ---------- charts ----------
 const C = { cyan: '#22d3ee', amber: '#fbbf24', pink: '#f472b6', violet: '#a78bfa', white: '#e2e8f0', green: '#34d399' };
-const chDisp = new StripChart($('ch-disp'), { title: 'Displacements', window: sim.window,
-  axes: [{ label: 'x (cm)', minSpan: 0.5 }, { label: 'α, β (deg)', minSpan: 0.5 }],
-  series: [{ name: 'x', color: C.cyan, axis: 0 }, { name: 'α', color: C.amber, axis: 1 }, { name: 'β', color: C.pink, axis: 1 }, { name: 'γ', color: C.green, axis: 1 }, { name: 'ψ yaw', color: C.violet, axis: 1 }] });
+// First chart: four selectable views, all recorded in parallel (only the selected one is drawn).
+const VIEWS = {
+  disp: { label: 'Displacements', axes: [{ label: 'x (cm)', minSpan: 0.5 }, { label: 'α, β (deg)', minSpan: 0.5 }],
+    series: [{ name: 'x', color: C.cyan, axis: 0 }, { name: 'α', color: C.amber, axis: 1 }, { name: 'β', color: C.pink, axis: 1 }, { name: 'γ', color: C.green, axis: 1 }, { name: 'ψ yaw', color: C.violet, axis: 1 }] },
+  acc: { label: 'Accelerations (world)', axes: [{ label: 'a (m/s²)', minSpan: 0.2 }],
+    series: [{ name: 'a_x', color: C.cyan }, { name: 'a_y', color: C.amber }, { name: 'a_z', color: C.pink }] },
+  sensor: { label: 'Phone accelerometer', axes: [{ label: 'x,y,z with g (m/s²)', minSpan: 0.2 }],
+    series: [{ name: 'x', color: C.cyan }, { name: 'y', color: C.amber }, { name: 'z', color: C.pink }] },
+  gyro: { label: 'Phone gyroscope', axes: [{ label: 'ω (rad/s)', minSpan: 0.05 }],
+    series: [{ name: 'x', color: C.cyan }, { name: 'y', color: C.amber }, { name: 'z', color: C.pink }] },
+};
+const viewCharts = {};
+for (const [k, v] of Object.entries(VIEWS)) viewCharts[k] = new StripChart($('ch-disp'), { title: '', window: sim.window, axes: v.axes, series: v.series });
+let view1 = new URLSearchParams(location.search).get('chart1');
+if (!(view1 in VIEWS)) view1 = 'disp';
+let chDisp = viewCharts[view1];
 const chEnergy = new StripChart($('ch-energy'), { title: 'Energy exchange', window: sim.window,
   axes: [{ label: 'E (mJ)', includeZero: true, minSpan: 0.05 }],
   series: [{ name: 'E_r', color: C.cyan }, { name: 'E_s', color: C.amber }, { name: 'E_c', color: C.violet }, { name: 'E_rot', color: C.green }, { name: 'E_rel', color: C.white, dash: [4, 3] }, { name: 'E_spring,kin', color: C.pink }] });
@@ -55,7 +68,11 @@ const chXY = new XYChart($('ch-xy'), { title: 'Footprint (top view)', unit: 'cm'
 const chDiag = new StripChart($('ch-diag'), { title: 'Resonance diagnostics', window: sim.window,
   axes: [{ label: 'Δφ (rad)', fixed: [-Math.PI, Math.PI] }, { label: 'amplitude (cm)', includeZero: true, minSpan: 0.2 }],
   series: [{ name: 'Δφ', color: C.green, axis: 0, dots: true }, { name: 'amp_r', color: C.cyan, axis: 1 }, { name: 'amp_s·R', color: C.amber, axis: 1 }] });
-const allCharts = [chDisp, chEnergy, chXY, chDiag];
+const allCharts = [...Object.values(viewCharts), chEnergy, chXY, chDiag];
+const sel1 = $('sel-chart1');
+sel1.innerHTML = Object.entries(VIEWS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
+sel1.value = view1;
+sel1.addEventListener('change', () => { view1 = sel1.value; chDisp = viewCharts[view1]; chDisp.ranges = [null, null]; drawCharts(); });
 
 // ---------- toast ----------
 let toastTimer = null;
@@ -163,8 +180,8 @@ function syncModel() {
   const m = params.model, rl = isRigidLike(m), el = m === 'elastic';
   tuning.querySelectorAll('#model-seg button').forEach(b => b.classList.toggle('on', b.dataset.model === m));
   $('model-note').textContent = MODEL_NOTE[m] || '';
-  chDisp.setSeriesVisible(3, rl); chDisp.setSeriesVisible(4, rl); chEnergy.setSeriesVisible(3, rl); chEnergy.setSeriesVisible(5, el);
-  chDisp.axes[1].label = rl ? 'α, β, γ, ψ (deg)' : 'α, β (deg)';
+  viewCharts.disp.setSeriesVisible(3, rl); viewCharts.disp.setSeriesVisible(4, rl); chEnergy.setSeriesVisible(3, rl); chEnergy.setSeriesVisible(5, el);
+  viewCharts.disp.axes[1].label = rl ? 'α, β, γ, ψ (deg)' : 'α, β (deg)';
   chEnergy.series[2].name = el ? 'E_c (+ spring internal)' : 'E_c';
 }
 tuning.querySelectorAll('#model-seg button').forEach(b => b.addEventListener('click', () => {
@@ -356,7 +373,7 @@ $('nl-go').addEventListener('click', async () => {
 
 // ---------- CSV / share ----------
 function exportCsv() {
-  const head = `# model=${params.model}\n# params=${JSON.stringify(params)}\nt,X,Y,Z,x,alpha,beta,Er,Es,Ec,Erel,Emech,dPhi,partitionR,tilt,tiltY,Erot,qw,qx,qy,qz,attachX,attachY,attachZ,yaw,twistTotal,EspringKin,EspringEl\n`;
+  const head = `# model=${params.model}\n# params=${JSON.stringify(params)}\nt,X,Y,Z,x,alpha,beta,Er,Es,Ec,Erel,Emech,dPhi,partitionR,tilt,tiltY,Erot,qw,qx,qy,qz,attachX,attachY,attachZ,yaw,twistTotal,EspringKin,EspringEl,ax,ay,az,accX,accY,accZ,gyroX,gyroY,gyroZ\n`;
   const blob = new Blob([head + rows.map(r => r.join(',')).join('\n') + '\n'], { type: 'text/csv' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'elastic_pendulum.csv';
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
@@ -365,6 +382,7 @@ function exportCsv() {
 function share() {
   const q = new URLSearchParams();
   for (const k of Object.keys(DEFAULT_PARAMS)) q.set(k, String(params[k]));
+  q.set('chart1', view1);
   const url = location.origin + location.pathname + '?' + q.toString();
   history.replaceState(null, '', '?' + q.toString());
   (navigator.clipboard?.writeText(url) ?? Promise.reject()).then(() => toast('Share link copied'), () => toast('Link set in the address bar: ' + url));
@@ -381,11 +399,12 @@ function scheduleRestart() {
 function sample() {
   obs = observables(state, params, derived);
   const o = obs;
-  chDisp.push(o.t, [o.x * 100, o.alpha * R2D, o.beta * R2D, (o.tilt || 0) * R2D, (o.yaw || 0) * R2D]);
+  viewCharts.disp.push(o.t, [o.x * 100, o.alpha * R2D, o.beta * R2D, (o.tilt || 0) * R2D, (o.yaw || 0) * R2D]);
+  viewCharts.acc.push(o.t, o.acc); viewCharts.sensor.push(o.t, o.accSensor); viewCharts.gyro.push(o.t, o.gyroSensor);
   chEnergy.push(o.t, [o.Er * 1e3, o.Es * 1e3, o.Ec * 1e3, (o.Erot || 0) * 1e3, o.Erel * 1e3, (o.EspringKin || 0) * 1e3]);
   chXY.push(o.t, o.q[0] * 100, o.q[1] * 100);
   chDiag.push(o.t, [o.dPhi, o.ampR * 100, o.ampS * derived.Req * 100]);
-  if (rows.length < MAX_ROWS) rows.push([o.t, o.q[0], o.q[1], o.q[2], o.x, o.alpha, o.beta, o.Er, o.Es, o.Ec, o.Erel, o.Emech, o.dPhi, o.partitionR, o.tilt ?? 0, o.tiltY ?? 0, o.Erot ?? 0, ...(o.quat || [1, 0, 0, 0]), ...(o.attach || [0, 0, 0]), o.yaw ?? 0, o.twistTotal ?? 0, o.EspringKin ?? 0, o.EspringEl ?? 0].map(v => +(+v).toPrecision(8)));
+  if (rows.length < MAX_ROWS) rows.push([o.t, o.q[0], o.q[1], o.q[2], o.x, o.alpha, o.beta, o.Er, o.Es, o.Ec, o.Erel, o.Emech, o.dPhi, o.partitionR, o.tilt ?? 0, o.tiltY ?? 0, o.Erot ?? 0, ...(o.quat || [1, 0, 0, 0]), ...(o.attach || [0, 0, 0]), o.yaw ?? 0, o.twistTotal ?? 0, o.EspringKin ?? 0, o.EspringEl ?? 0, ...o.acc, ...o.accSensor, ...o.gyroSensor].map(v => +(+v).toPrecision(8)));
 }
 function restart() {
   clearTimeout(restartTimer); restartTimer = null;
@@ -435,7 +454,7 @@ function updateReadout() {
   const m = params.model, rigid = isRigidLike(m), el = m === 'elastic';
   const pr = isFinite(o.partitionR) ? Math.min(1, Math.max(0, o.partitionR)) : 0;
   const slow = sim.playing && effSpeed < sim.speed * 0.95;
-  $('readout').innerHTML = `
+  const html = `
     <div class="row"><span class="k">model</span><span>${{ elastic: 'Elastic spring', rigid: 'Rigid body', point: 'Point mass' }[m]}</span></div>
     <div class="row"><span class="k">t</span><span>${f(o.t, 2)} s</span></div>
     <div class="row"><span class="k">x</span><span>${f(o.x * 100, 2)} cm</span></div>
@@ -453,12 +472,16 @@ function updateReadout() {
     <div class="row"><span class="k">speed</span><span>${sim.speed.toFixed(1)}×${sim.playing ? '' : ' (paused)'}</span></div>
     ${slow ? `<div style="color:#fbbf24">running at ${effSpeed.toFixed(2)}× real time</div>` : ''}
     ${o.slack ? '<span class="badge">SLACK</span>' : ''}`;
+  if (html !== lastReadoutHtml) { lastReadoutHtml = html; $('readout').innerHTML = html; }
 }
+let lastReadoutHtml = '';
 function pushScene() {
   if (!scene || !obs) return;
   scene.update({ q: obs.q, attach: obs.attach, quat: obs.quat, spring: obs.spring, ell: obs.ell, slack: obs.slack, springLength: obs.springLength, tilt: obs.tilt, params, derived });
 }
-function drawCharts() { allCharts.forEach(c => c.draw()); }
+function drawCharts() { allCharts.forEach(c => { if (c.canvas !== viewCharts.disp.canvas || c === chDisp) c.draw(); }); }
+// Loop redraw: skip charts whose data did not change since their last draw (identical output, less work).
+function drawChartsIfDirty() { allCharts.forEach(c => { if (c.canvas !== viewCharts.disp.canvas || c === chDisp) c.drawIfDirty(); }); }
 
 // ---------- main loop ----------
 let lastT = performance.now(), lastChart = 0;
@@ -487,7 +510,7 @@ function frame(now) {
     } else effSpeed = sim.speed;
     pushScene();
     updateReadout();
-    if (now - lastChart > 40) { lastChart = now; drawCharts(); }
+    if (now - lastChart > 40) { lastChart = now; drawChartsIfDirty(); }
   } catch (e) { showError(e); sim.playing = false; syncPlayLabels(); }
 }
 

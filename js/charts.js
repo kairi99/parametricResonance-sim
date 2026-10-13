@@ -52,16 +52,19 @@ export class StripChart {
     this.head = 0; this.count = 0;
     this.ranges = [null, null];
   }
-  setWindow(s) { this.windowSec = s; this.ranges = [null, null]; }
-  setSeriesVisible(i, vis) { if (this.series[i]) { this.series[i].hidden = !vis; this.ranges = [null, null]; } }
-  clear() { this.head = 0; this.count = 0; this.ranges = [null, null]; }
+  setWindow(s) { this.windowSec = s; this.ranges = [null, null]; this.ver = (this.ver | 0) + 1; }
+  setSeriesVisible(i, vis) { if (this.series[i]) { this.series[i].hidden = !vis; this.ranges = [null, null]; this.ver = (this.ver | 0) + 1; } }
+  clear() { this.head = 0; this.count = 0; this.ranges = [null, null]; this.ver = (this.ver | 0) + 1; }
+  drawIfDirty() { if (this.ver !== this.drawnVer) this.draw(); } // OPT-C
   push(t, values) {
     const idx = (this.head + this.count) % this.cap;
     if (this.count < this.cap) this.count++; else this.head = (this.head + 1) % this.cap;
+    this.ver = (this.ver | 0) + 1;
     this.t[idx] = t;
     for (let i = 0; i < this.v.length; i++) this.v[i][idx] = values[i];
   }
   draw() {
+    this.drawnVer = this.ver;
     const { ctx, w, h } = setupCanvas(this.canvas);
     ctx.clearRect(0, 0, w, h);
     const two = this.axes.length > 1 && this.series.some(s => s.axis === 1 && !s.hidden);
@@ -163,14 +166,17 @@ export class XYChart {
     this.t = new Float64Array(this.cap); this.x = new Float32Array(this.cap); this.y = new Float32Array(this.cap);
     this.head = 0; this.count = 0; this.half = null;
   }
-  setWindow(s) { this.windowSec = s; }
-  clear() { this.head = 0; this.count = 0; this.half = null; }
+  setWindow(s) { this.windowSec = s; this.ver = (this.ver | 0) + 1; }
+  clear() { this.head = 0; this.count = 0; this.half = null; this.ver = (this.ver | 0) + 1; }
+  drawIfDirty() { if (this.ver !== this.drawnVer) this.draw(); } // OPT-C
   push(t, x, y) {
     const idx = (this.head + this.count) % this.cap;
     if (this.count < this.cap) this.count++; else this.head = (this.head + 1) % this.cap;
+    this.ver = (this.ver | 0) + 1;
     this.t[idx] = t; this.x[idx] = x; this.y[idx] = y;
   }
   draw() {
+    this.drawnVer = this.ver;
     const { ctx, w, h } = setupCanvas(this.canvas);
     ctx.clearRect(0, 0, w, h);
     const m = { l: 10, r: 10, t: 22, b: 16 };
@@ -232,6 +238,7 @@ export class ScanChart {
   set(scan, linear, best) { this.scan = (scan || []).filter(p => p && isFinite(p.value)).sort((a, b) => a.value - b.value); this.linear = linear ?? null; this.best = best ?? null; }
   clear() { this.scan = []; this.linear = null; this.best = null; }
   draw() {
+    this.drawnVer = this.ver;
     const { ctx, w, h } = setupCanvas(this.canvas);
     ctx.clearRect(0, 0, w, h);
     const m = { l: 34, r: 40, t: 20, b: 30 };
