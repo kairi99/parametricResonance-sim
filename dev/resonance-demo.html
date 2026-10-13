@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8"><title>Resonance worker demo</title>
+<body style="font:14px monospace;background:#111;color:#ddd">
+<h3>Resonance worker demo (point model, cordLength knob)</h3>
+<pre id="log"></pre>
+<script>
+window.demo = { progress: 0, result: null, error: null, t0: performance.now() };
+const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
+const w = new Worker('../js/resonance-worker.js', { type: 'module' });
+w.onerror = (e) => { demo.error = String(e.message || e); log('worker error: ' + demo.error); };
+w.onmessage = (e) => {
+  const m = e.data;
+  if (m.type === 'progress') { demo.progress = m.fraction; log(`progress ${(m.fraction * 100).toFixed(0)}% (${m.partial.length} pts)`); }
+  else if (m.type === 'result') { demo.result = m.data; log(`result after ${((performance.now() - demo.t0) / 1000).toFixed(2)} s\n` + m.data.note); }
+  else if (m.type === 'error') { demo.error = m.message; log('error: ' + m.message); }
+};
+const deg = Math.PI / 180;
+w.postMessage({ id: 1, task: 'search', knob: 'cordLength',
+  params: { model: 'point', dampingModel: 'none', x0: 0.04, alpha0: 0.5 * deg, beta0: 0 } });
+</script>

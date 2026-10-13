@@ -1,8 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  DEFAULT_PARAMS, withDefaults, derive, createState, step, advance, observables, solveForResonance, simulate,
-} from '../js/physics.js';
+import * as PH from '../js/physics.js';
+import * as EL from '../js/elastic.js';
+const { DEFAULT_PARAMS, createState, step, advance, observables } = PH;
+// v2 tests rely on the 'rigid' default; the library default is now 'elastic'. Wrappers keep the old tests unchanged.
+const r2 = (p) => ({ model: 'rigid', ...(p || {}) });
+const withDefaults = (p) => PH.withDefaults(r2(p));
+const derive = (p) => PH.derive(r2(p));
+const solveForResonance = (p, k) => PH.solveForResonance(r2(p), k);
+const simulate = (p, ...a) => PH.simulate(r2(p), ...a);
 
 const deg = Math.PI / 180;
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg || ''} ${a} vs ${b} (tol ${tol})`);
@@ -314,4 +320,252 @@ test('benchmark both models', () => {
     const sec = Number(process.hrtime.bigint() - t0) / 1e9;
     console.log(`  [bench ${model}] ${Math.round(N / sec)} steps/s`);
   }
+});
+
+// ======================= v3: elastic helical-spring model =======================
+const E = (extra) => PH.withDefaults({ model: 'elastic', kCalibration: 'unloaded', ...(extra || {}) });
+const SEGV = [0, 0, 0], SEGA = [0, 0, 0], SEGB = [0, 0, 0];
+const heli = () => {
+  const mat = EL.MATERIALS.steel, c = EL.calibrate(18.95, 0.0063, 0.022, 0.19, mat);
+  const h = EL.helixProps(c.dw, c.n, 0.022, 0.19, mat);
+  return { h, S: EL.makeSegment(h, 12) };
+};
+const crossF = (ts, vs) => { // mean frequency from zero crossings
+  const t = [];
+  for (let i = 1; i < vs.length; i++) if (vs[i - 1] < 0 && vs[i] >= 0 || vs[i - 1] > 0 && vs[i] <= 0) t.push(ts[i - 1] + (ts[i] - ts[i - 1]) * vs[i - 1] / (vs[i - 1] - vs[i]));
+  return ((t.length - 1) / 2) / (t[t.length - 1] - t[0]);
+};
+function run(p, T, key, every = 5) {
+  const d = PH.derive(p), s = createState(p, d), n = Math.round(T / d.dt), ts = [], vs = [];
+  for (let i = 0; i <= n; i++) {
+    if (i % every === 0) { const o = observables(s, p, d); ts.push(s.t); vs.push(typeof key === 'function' ? key(o) : o[key]); }
+    step(s, p, d, d.dt);
+  }
+  return { d, ts, vs, s };
+}
+
+test('E1 segment W=dU/dLs, K=dU/dpsi vs finite differences', () => {
+  const { S } = heli(); let worst = 0;
+  for (const [f, psi] of [[1, 0], [2, 0.3], [4, -0.5], [6, 0.8], [0.9, 0.1], [7, 0]]) {
+    const L = S.Ls0 * f, e = 1e-7;
+    EL.segmentEnergy(S, L, psi, SEGV);
+    EL.segmentEnergy(S, L + e * S.l, psi, SEGA); EL.segmentEnergy(S, L - e * S.l, psi, SEGB);
+    const W = (SEGA[0] - SEGB[0]) / (2 * e * S.l);
+    EL.segmentEnergy(S, L, psi + e, SEGA); EL.segmentEnergy(S, L, psi - e, SEGB);
+    const K = (SEGA[0] - SEGB[0]) / (2 * e);
+    worst = Math.max(worst, Math.abs(W - SEGV[1]) / (Math.abs(W) + 1e-6), Math.abs(K - SEGV[2]) / (Math.abs(K) + 1e-8));
+  }
+  console.log(`  [E1] worst relative derivative error ${worst.toExponential(2)}`);
+  assert.ok(worst < 1e-6);
+});
+
+test('E2 Love/Timoshenko compliance and close-coiled limits', () => {
+  const mat = EL.MATERIALS.steel;
+  for (const a0deg of [7.15, 1]) {
+    const D = 0.022, n = 20, L0 = n * TWO(D, a0deg);
+    const h = EL.helixProps(0.0008, n, D, L0, mat), N = 12, S = EL.makeSegment(h, N);
+    const g = (L, p) => { EL.segmentEnergy(S, L, p, SEGV); return [SEGV[1], SEGV[2]]; };
+    const e = 1e-6, L = S.Ls0;
+    const [w1, k1] = g(L + e * S.l, 0), [w2, k2] = g(L - e * S.l, 0), [w3, k3] = g(L, e), [w4, k4] = g(L, -e);
+    const H = [[(w1 - w2) / (2 * e * S.l), (w3 - w4) / (2 * e)], [(k1 - k2) / (2 * e * S.l), (k3 - k4) / (2 * e)]];
+    const det = H[0][0] * H[1][1] - H[0][1] * H[1][0];
+    const comp = [H[1][1] / det, -H[0][1] / det, H[0][0] / det];
+    const R0 = D / 2, s = Math.sin(h.alpha0), c = Math.cos(h.alpha0), ls = h.ell / N;
+    const ed = ls * R0 * R0 * (c * c / h.C + s * s / h.B), eb = ls * R0 * s * c * (1 / h.C - 1 / h.B), ec = ls * (s * s / h.C + c * c / h.B);
+    const errs = [Math.abs(comp[0] / ed - 1), Math.abs(comp[1] / eb - 1), Math.abs(comp[2] / ec - 1)];
+    console.log(`  [E2 alpha0=${(h.alpha0 / deg).toFixed(2)}] rel err delta/W, cross, phi/K = ${errs.map(v => v.toExponential(1))}`);
+    assert.ok(Math.max(...errs) < 1e-3);
+    const kc = mat.G * 0.0008 ** 4 / (8 * D ** 3 * n), kt = mat.E * 0.0008 ** 4 / (64 * D * n);
+    console.log(`  [E2] kLin/k_close=${(h.kLin / kc).toFixed(5)} kTwist/kt_close=${(h.kTwist / kt).toFixed(5)}`);
+    if (a0deg < 2) { assert.ok(Math.abs(h.kLin / kc - 1) < 1e-2); assert.ok(Math.abs(h.kTwist / kt - 1) < 1e-2); }
+  }
+});
+function TWO(D, a0deg) { return 2 * Math.PI * (D / 2) * Math.tan(a0deg * deg); }
+
+test('E3 fromK calibration', () => {
+  const d = PH.derive(E());
+  const { h } = heli();
+  near(d.kLin / 18.95, 1, 1e-6, 'kLin'); near(d.springMassModel / 0.0063, 1, 1e-6, 'mass');
+  console.log(`  [E3] dw=${(d.wireDiameter * 1e3).toFixed(4)} mm n=${d.activeTurns.toFixed(3)} alpha0=${(d.helixAngle0 / deg).toFixed(3)} deg`);
+  console.log(`  [defaults] ` + ['kLin', 'kTangentEq', 'kTwist', 'couplingWT', 'Leq', 'Req', 'yawEq', 'fR', 'fS', 'fS2', 'fSy', 'fSy2', 'fTwist', 'fSurge', 'ratio', 'dt', 'fRTextbook', 'kShear', 'kBend'].map(k => `${k}=${d[k].toPrecision(5)}`).join(' '));
+  // whole-spring small deflection stiffness from Hessian of the segment model (series of N segments)
+  const { S } = heli();
+  const e = 1e-6, g = (L, p) => { EL.segmentEnergy(S, L, p, SEGV); return [SEGV[1], SEGV[2]]; };
+  const [w1, k1] = g(S.Ls0 + e * S.l, 0), [w2, k2] = g(S.Ls0 - e * S.l, 0), [w3, k3] = g(S.Ls0, e), [w4, k4] = g(S.Ls0, -e);
+  const a = (w1 - w2) / (2 * e * S.l), b = (w3 - w4) / (2 * e), c = (k3 - k4) / (2 * e), bc = (k1 - k2) / (2 * e * S.l);
+  const kseg = a - b * bc / c;
+  near(kseg / 12 / 18.95, 1, 1e-6, 'model Hessian k');
+});
+
+test('E4 static equilibrium', () => {
+  const p = E({ dampingModel: 'none', x0: 0, alpha0: 0, beta0: 0 });
+  const d = PH.derive(p), s = createState(p, d), y0 = Float64Array.from(s.y);
+  advance(s, p, d, 5);
+  let md = 0; for (let b = 0; b < d.el.nf; b++) for (let k = 0; k < 3; k++) md = Math.max(md, Math.abs(s.y[13 * b + k] - y0[13 * b + k]));
+  const com = Math.hypot(s.q[0], s.q[1], s.q[2] + d.Req);
+  console.log(`  [E4] Leq=${d.Leq.toFixed(6)} Req=${d.Req.toFixed(6)} yawEq=${d.yawEq.toFixed(5)} rad  seg top=${d.LsEq[0].toFixed(6)} bottom=${d.LsEq[11].toFixed(6)}  node disp ${md.toExponential(1)} COM move ${com.toExponential(1)}`);
+  assert.ok(md < 1e-6 && com < 1e-6);
+  assert.ok(d.LsEq[0] > d.LsEq[11]);
+});
+
+test('E5 energy conservation (elastic, 30 s)', () => {
+  const p = E({ dampingModel: 'none', x0: 0.03, alpha0: 5 * deg, beta0: 1 * deg });
+  const d = PH.derive(p), s = createState(p, d), E0 = observables(s, p, d).Emech;
+  let mx = 0;
+  for (let k = 0; k < 30; k++) { advance(s, p, d, 1); mx = Math.max(mx, Math.abs(observables(s, p, d).Emech - E0) / E0); }
+  console.log(`  [E5] max |dE|/E0 over 30 s = ${mx.toExponential(2)} (dt=${d.dt})`);
+  assert.ok(mx < 1e-5);
+});
+
+test('E5b analytic forces = -grad(energy) (rotations, shear, twist)', () => {
+  const p = E({ dampingModel: 'none', x0: 0.03, alpha0: 5 * deg, beta0: 3 * deg, tiltX0: 0, alignPhone: 0, spin0: 0.5 });
+  const d = PH.derive(p), s = createState(p, d), cx = d.el;
+  advance(s, p, d, 0.05);
+  const n = 6 * (cx.nf + 1), g = new Float64Array(n), yt = new Float64Array(cx.ny), gp = new Float64Array(n);
+  EL.gradMinimal(s.y, cx, g);
+  // energy V(y) = U + gravity
+  const V = (y) => { const e = EL.energyParts(y, cx); return e.U + e.Vg; };
+  let worst = 0, scale = 0;
+  for (let j = 0; j < n; j++) scale = Math.max(scale, Math.abs(g[j]));
+  for (let j = 0; j < n; j++) {
+    const hh = 1e-6; yt.set(s.y);
+    const pert = (sgn) => { const o = 13 * Math.floor(j / 6), k = j % 6, y = Float64Array.from(s.y);
+      if (k < 3) y[o + k] += sgn * hh; else { const e = [Math.cos(hh / 2), 0, 0, 0]; e[1 + k - 3] = sgn * Math.sin(hh / 2);
+        const q = [y[o + 6], y[o + 7], y[o + 8], y[o + 9]]; y[o + 6] = q[0] * e[0] - q[1] * e[1] - q[2] * e[2] - q[3] * e[3];
+        y[o + 7] = q[0] * e[1] + q[1] * e[0] + q[2] * e[3] - q[3] * e[2]; y[o + 8] = q[0] * e[2] - q[1] * e[3] + q[2] * e[0] + q[3] * e[1];
+        y[o + 9] = q[0] * e[3] + q[1] * e[2] - q[2] * e[1] + q[3] * e[0]; } return y; };
+    const fd = (V(pert(1)) - V(pert(-1))) / (2 * hh);
+    worst = Math.max(worst, Math.abs(fd - g[j]) / (scale + 1e-12));
+  }
+  console.log(`  [E5b] worst gradient error / max|grad| = ${worst.toExponential(2)}`);
+  assert.ok(worst < 1e-5);
+});
+
+test('E6 distributed mass: heavy spring bounce vs continuum', () => {
+  const M = 0.177, ms = 0.5 * M; // NB: ms/M = 0.5 keeps the geometry physical (3*M would close the coils)
+  const p = E({ springMass: ms, springSegments: 24, dampingModel: 'none', x0: 0.004, alpha0: 0, beta0: 0 });
+  const r = run(p, 12, 'x', 10);
+  const f = crossF(r.ts, r.vs), d = r.d;
+  let lo = 0, hi = Math.PI / 2 - 1e-9; for (let i = 0; i < 200; i++) { const m = (lo + hi) / 2; if (m * Math.tan(m) < ms / M) lo = m; else hi = m; }
+  const kk = d.kLin, fExact = lo * Math.sqrt(kk / ms) / (2 * Math.PI), fTb = Math.sqrt(kk / (M + ms / 3)) / (2 * Math.PI);
+  console.log(`  [E6] measured ${f.toFixed(4)} Hz, continuum ${fExact.toFixed(4)} (${((f / fExact - 1) * 100).toFixed(2)}%), textbook m/3 ${fTb.toFixed(4)} (${((fTb / fExact - 1) * 100).toFixed(2)}%), fR(linear) ${d.fR.toFixed(4)} warn=${d.warnings}`);
+  assert.ok(Math.abs(f / fExact - 1) < 0.015);
+  // the m/3 rule is itself accurate to O((ms/M)^2); the simulation must be at least as close to the exact result
+  assert.ok(Math.abs(f / fExact - 1) < Math.abs(fTb / fExact - 1));
+});
+
+test('E7 torsion frequency', () => {
+  const p = E({ dampingModel: 'none', x0: 0, alpha0: 0, beta0: 0, spin0: 0.5 });
+  const r = run(p, 12, 'yaw', 10);
+  const f = crossF(r.ts, r.vs);
+  console.log(`  [E7] yaw measured ${f.toFixed(4)} Hz vs fTwist ${r.d.fTwist.toFixed(4)}`);
+  assert.ok(Math.abs(f / r.d.fTwist - 1) < 0.02);
+});
+
+test('E8 modes vs simulation', () => {
+  let p = E({ dampingModel: 'none', x0: 0.002, alpha0: 0, beta0: 0 });
+  let r = run(p, 15, 'x', 10);
+  const fR = crossF(r.ts, r.vs);
+  p = E({ dampingModel: 'none', x0: 0, alpha0: 0.3 * deg, beta0: 0 });
+  r = run(p, 40, 'alpha', 20);
+  const fS = crossF(r.ts, r.vs);
+  console.log(`  [E8] bounce ${fR.toFixed(4)} vs fR ${r.d.fR.toFixed(4)}; swing ${fS.toFixed(4)} vs fS ${r.d.fS.toFixed(4)}`);
+  assert.ok(Math.abs(fR / r.d.fR - 1) < 0.01);
+  assert.ok(Math.abs(fS / r.d.fS - 1) < 0.01);
+});
+
+test('E9 Wilberforce sanity', () => {
+  const base = E({ dampingModel: 'none', x0: 0.02, alpha0: 0, beta0: 0 });
+  const d0 = PH.derive(base);
+  console.log(`  [E9] couplingWT=${d0.couplingWT.toExponential(3)} N/rad, defaults fR=${d0.fR.toFixed(3)} fTwist=${d0.fTwist.toFixed(3)}`);
+  let lo = 0, hi = 0.8; // extraMass: fR decreases, fTwist constant
+  const f = (m) => { const d = PH.derive({ ...base, extraMass: m }); return d.fR - d.fTwist; };
+  for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (f(m) > 0) lo = m; else hi = m; }
+  const em = (lo + hi) / 2, tuned = { ...base, extraMass: em }, dT = PH.derive(tuned);
+  const maxYaw = (pp, T) => { const r = run(pp, T, (o) => Math.abs(o.yaw), 20); return Math.max(...r.vs); };
+  const yDet = maxYaw(base, 20), yRes = maxYaw(tuned, 20);
+  console.log(`  [E9] extraMass=${em.toFixed(4)} kg: fR=${dT.fR.toFixed(4)} fTwist=${dT.fTwist.toFixed(4)}; max |yaw| from pure bounce: detuned ${yDet.toExponential(2)} rad, tuned ${yRes.toExponential(2)} rad`);
+  assert.ok(yRes > 3 * yDet);
+});
+
+test('E10 cord / slack', () => {
+  const p = E({ cordLength: 0.1, x0: 0.12, dampingModel: 'none', alpha0: 2 * deg });
+  const d = PH.derive(p);
+  const res = {};
+  for (const [label, fac] of [['derived.dt', 1], ['derived.dt/2.5', 0.4]]) {
+    const s = createState(p, d), E0 = observables(s, p, d).Emech;
+    let mx = 0, slack = false;
+    for (let k = 0; k < 100; k++) {
+      advance(s, p, d, 0.1, d.dt * fac);
+      const o = observables(s, p, d);
+      for (const v of [...o.q, o.Emech, o.yaw]) assert.ok(Number.isFinite(v));
+      mx = Math.max(mx, Math.abs(o.Emech - E0) / E0); slack = slack || o.slack;
+    }
+    res[label] = mx;
+    console.log(`  [E10] cord 0.1 m, x0 0.12 (slack=${slack}), step ${label}=${(d.dt * fac).toExponential(2)}: energy drift over 10 s ${mx.toExponential(2)}`);
+  }
+  assert.ok(res['derived.dt/2.5'] < 1e-3);
+  assert.ok(res['derived.dt'] < 5e-2);
+});
+
+test('E11 performance', () => {
+  let t0 = process.hrtime.bigint();
+  const p = E({ springSegments: 12 }); PH.derive({ ...p, springK: 18.9501 });
+  const dms = Number(process.hrtime.bigint() - t0) / 1e6;
+  const d = PH.derive(p), s = createState(p, d);
+  const n = 20000; t0 = process.hrtime.bigint();
+  for (let i = 0; i < n; i++) step(s, p, d, d.dt);
+  const sec = Number(process.hrtime.bigint() - t0) / 1e9;
+  console.log(`  [E11] derive ${dms.toFixed(0)} ms; ${Math.round(n / sec)} steps/s; real-time factor ${(n * d.dt / sec).toFixed(1)}x (dt=${d.dt})`);
+  assert.ok(dms < 300);
+  assert.ok(n * d.dt / sec >= 8);
+});
+
+test('E12 springMass -> 0 limit approaches rigid fR', () => {
+  // fromK cannot make a 1e-6 kg spring with D=22 mm (it needs < 1 turn); use 'direct' geometry with a near-massless wire material
+  const mk = E({ springGeometry: 'direct', wireMaterial: 'custom', wireE: 200e9, wireG: 79.3e9, wireRho: 1e-3 });
+  const de = PH.derive(mk), dr = PH.derive({ ...DEFAULT_PARAMS, model: 'rigid', springK: de.kTangentEq, springMass: de.springMassModel }); // the stretched spring is stiffer: compare at the tangent stiffness at equilibrium
+  console.log(`  [E12] model spring mass ${de.springMassModel.toExponential(2)} kg, kLin ${de.kLin.toFixed(3)}`);
+  console.log(`  [E12] elastic fR ${de.fR.toFixed(5)} vs rigid fR ${dr.fR.toFixed(5)} (${((de.fR / dr.fR - 1) * 100).toFixed(3)}%)`);
+  assert.ok(Math.abs(de.fR / dr.fR - 1) < 0.005, 'see print');
+});
+
+test('E13 other models: new observables and dt', () => {
+  for (const model of ['point', 'rigid', 'elastic']) {
+    const p = E({ model }); const d = PH.derive(p), s = createState(p, d), o = observables(s, p, d);
+    assert.ok(d.dt > 0 && o.spring.nodes.length === 3 * o.spring.phase.length && Number.isFinite(o.yaw));
+    assert.ok('twistTotal' in o && 'EspringKin' in o && 'EspringEl' in o);
+  }
+});
+
+test('E14 loaded calibration (kRefLoad)', () => {
+  const d = PH.derive(PH.withDefaults({ model: 'elastic' }));
+  console.log(`  [E14 defaults] dw=${(d.wireDiameter * 1e3).toFixed(4)} mm n=${d.activeTurns.toFixed(3)} a0=${(d.helixAngle0 / deg).toFixed(3)} kLin=${d.kLin.toFixed(4)} kTangentRef=${d.kTangentRef.toFixed(6)} kTangentEq=${d.kTangentEq.toFixed(4)} fR=${d.fR.toFixed(4)} fS=${d.fS.toFixed(4)} fTwist=${d.fTwist.toFixed(4)} ratio=${d.ratio.toFixed(4)} warn=${d.warnings}`);
+  near(d.kTangentRef / 18.95, 1, 1e-6, 'kTangentRef');
+  const lab = { model: 'elastic', phoneMass: 0.2112, phoneLength: 0.150 };
+  const dl = PH.derive(PH.withDefaults(lab));
+  console.log(`  [E14 lab] dw=${(dl.wireDiameter * 1e3).toFixed(4)} mm n=${dl.activeTurns.toFixed(3)} a0=${(dl.helixAngle0 / deg).toFixed(3)} kLin=${dl.kLin.toFixed(4)} kTangentRef=${dl.kTangentRef.toFixed(6)} kTangentEq=${dl.kTangentEq.toFixed(4)} fR=${dl.fR.toFixed(4)} fS=${dl.fS.toFixed(4)} fTwist=${dl.fTwist.toFixed(4)} ratio=${dl.ratio.toFixed(4)}`);
+  near(dl.fR / 1.50026, 1, 3e-3, 'lab fR');
+  // geometry independent of phone/nut masses
+  const d2 = PH.derive(PH.withDefaults({ model: 'elastic', nutsPerSide: 5 }));
+  assert.equal(d2.wireDiameter, d.wireDiameter);
+  // cord real-time factor
+  const p = PH.withDefaults({ model: 'elastic', cordLength: 0.1 }), dc = PH.derive(p), s = createState(p, dc);
+  const t0 = process.hrtime.bigint(); for (let i = 0; i < 20000; i++) step(s, p, dc, dc.dt);
+  const sec = Number(process.hrtime.bigint() - t0) / 1e9;
+  console.log(`  [E14 cord] dt=${dc.dt.toExponential(2)} real-time factor ${(20000 * dc.dt / sec).toFixed(1)}x`);
+});
+
+test('E15 elastic solveForResonance robust', () => {
+  const p = PH.withDefaults({ model: 'elastic' });
+  let r = PH.solveForResonance(p, 'springK');
+  console.log(`  [E15] springK -> ${r.value} feasible=${r.feasible} ratio=${r.achievedRatio} derives=${r.derives} ${r.ms} ms`);
+  assert.ok(r.feasible && Math.abs(r.achievedRatio - 1) < 1e-6 && Math.abs(r.value / 18.95 - 1) < 0.15);
+  r = PH.solveForResonance({ ...p, caseMass: 0.045, attachmentOffset: 0.06, nutsPerSide: 5 }, 'cordLength');
+  console.log(`  [E15] cordLength (case+5 nuts) -> ${r.value} feasible=${r.feasible} ratio=${r.achievedRatio} derives=${r.derives} ${r.ms} ms ${r.note}`);
+  assert.ok(r.feasible && Math.abs(r.achievedRatio - 1) < 1e-6);
+  r = PH.solveForResonance(p, 'nutsPerSide');
+  console.log(`  [E15] nuts -> ${r.value} feasible=${r.feasible} derives=${r.derives} ${r.ms} ms ${r.note}`);
+  r = PH.solveForResonance({ ...p, springL0: 0.19, extraMass: 5 }, 'springK');
+  console.log(`  [E15] infeasible-case value=${r.value} feasible=${r.feasible}`);
 });

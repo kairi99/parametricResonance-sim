@@ -224,3 +224,60 @@ export class XYChart {
     ctx.restore();
   }
 }
+
+/** Scan result chart: eta (left axis, 0..1) and tExchange (right axis) vs a knob value; marks the linear estimate and the best value. */
+export class ScanChart {
+  constructor(canvas, opts = {}) { this.canvas = canvas; this.xLabel = opts.xLabel || ''; this.xScale = 1; this.xDec = 2; this.scan = []; this.linear = null; this.best = null; }
+  setAxis(label, scale, dec) { this.xLabel = label; this.xScale = scale; this.xDec = dec; }
+  set(scan, linear, best) { this.scan = (scan || []).filter(p => p && isFinite(p.value)).sort((a, b) => a.value - b.value); this.linear = linear ?? null; this.best = best ?? null; }
+  clear() { this.scan = []; this.linear = null; this.best = null; }
+  draw() {
+    const { ctx, w, h } = setupCanvas(this.canvas);
+    ctx.clearRect(0, 0, w, h);
+    const m = { l: 34, r: 40, t: 20, b: 30 };
+    const pw = w - m.l - m.r, ph = h - m.t - m.b;
+    if (pw < 20 || ph < 20) return;
+    ctx.font = FONT; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#dbe4f5'; ctx.textAlign = 'left'; ctx.font = '600 11px system-ui,sans-serif';
+    ctx.fillText('Energy transfer η and exchange time vs knob', 4, 9); ctx.font = FONT;
+    ctx.strokeStyle = 'rgba(138,154,192,0.35)'; ctx.strokeRect(m.l + 0.5, m.t + 0.5, pw, ph);
+    const pts = this.scan;
+    if (!pts.length) { ctx.fillStyle = AXIS; ctx.textAlign = 'center'; ctx.fillText('no scan yet', m.l + pw / 2, m.t + ph / 2); return; }
+    let x0 = pts[0].value, x1 = pts[pts.length - 1].value;
+    if (this.linear != null) { x0 = Math.min(x0, this.linear); x1 = Math.max(x1, this.linear); }
+    if (x1 - x0 < 1e-12) { x0 -= 0.5; x1 += 0.5; }
+    const X = v => m.l + (v - x0) / (x1 - x0) * pw;
+    const tmax = Math.max(1, ...pts.map(p => isFinite(p.tExchange) ? p.tExchange : 0)) * 1.1;
+    const Ye = v => m.t + ph - Math.min(1, Math.max(0, v)) * ph;
+    const Yt = v => m.t + ph - Math.min(tmax, Math.max(0, v)) / tmax * ph;
+    ctx.strokeStyle = GRID; ctx.fillStyle = AXIS; ctx.textAlign = 'right';
+    for (let e = 0; e <= 1.001; e += 0.25) { const y = Math.round(Ye(e)) + 0.5; ctx.beginPath(); ctx.moveTo(m.l, y); ctx.lineTo(m.l + pw, y); ctx.stroke(); ctx.fillStyle = '#22d3ee'; ctx.fillText(e.toFixed(2), m.l - 3, y); }
+    ctx.textAlign = 'left';
+    const ts = niceStep(tmax / 4);
+    for (let t = 0; t <= tmax; t += ts) { ctx.fillStyle = '#fbbf24'; ctx.fillText(fmtTick(t, ts), m.l + pw + 3, Yt(t)); }
+    ctx.textAlign = 'center'; ctx.fillStyle = AXIS;
+    const xs = niceStep((x1 - x0) * this.xScale / 4);
+    for (let v = Math.ceil(x0 * this.xScale / xs) * xs; v <= x1 * this.xScale + 1e-9; v += xs) ctx.fillText(fmtTick(v, xs), X(v / this.xScale), h - 16);
+    ctx.fillText(this.xLabel, m.l + pw / 2, h - 5);
+    ctx.fillStyle = '#22d3ee'; ctx.textAlign = 'left'; ctx.fillText('η', 4, m.t + 6);
+    ctx.fillStyle = '#fbbf24'; ctx.textAlign = 'right'; ctx.fillText('t_ex (s)', w - 2, m.t - 8);
+    // linear estimate
+    if (this.linear != null) {
+      const x = Math.round(X(this.linear)) + 0.5;
+      ctx.strokeStyle = '#a78bfa'; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(x, m.t); ctx.lineTo(x, m.t + ph); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = '#a78bfa'; ctx.textAlign = x > w / 2 ? 'right' : 'left'; ctx.fillText('linear', x + (x > w / 2 ? -3 : 3), m.t + 8);
+    }
+    ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t - 4, pw, ph + 8); ctx.clip();
+    const line = (Y, key, col) => {
+      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1.5; ctx.beginPath(); let started = false;
+      for (const p of pts) { const y = p[key]; if (!isFinite(y)) { started = false; continue; } const px = X(p.value), py = Y(y); if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py); }
+      ctx.stroke();
+      for (const p of pts) if (isFinite(p[key])) ctx.fillRect(X(p.value) - 2, Y(p[key]) - 2, 4, 4);
+    };
+    line(Yt, 'tExchange', '#fbbf24'); line(Ye, 'eta', '#22d3ee');
+    if (this.best && isFinite(this.best.value)) {
+      ctx.strokeStyle = '#34d399'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(X(this.best.value), Ye(this.best.eta), 5.5, 0, 7); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}

@@ -22,6 +22,7 @@ import { createScene } from '../js/scene.js';
 const qs = new URLSearchParams(location.search);
 const S = {
   case: qs.get('case') === '1', nuts: +(qs.get('nuts') ?? 0), cord: +(qs.get('cord') ?? 0),
+  bow: qs.get('bow') === '1', twist: qs.get('twist') === '1', spin: qs.get('spin') === '1', M: +(qs.get('M') ?? 13),
   slack: qs.get('slack') === '1', t: qs.has('t') ? +qs.get('t') : null,
 };
 const scene = createScene(document.getElementById('c'));
@@ -33,7 +34,7 @@ function params() {
 function derived(p) {
   const d = p.phoneLength / 2 + p.attachmentOffset;
   const R0 = p.springL0 + p.cordLength + d;
-  return { d, R0, Req: R0 + 0.06, M: 0.2 };
+  return { d, R0, Req: R0 + 0.06, M: 0.2, coilDiameter: 0.022, wireDiameter: 0.00082, activeTurns: 22 };
 }
 let P, D;
 function rb() { P = params(); D = derived(P); scene.rebuild(P, D); scene.clearTrail(); }
@@ -92,11 +93,31 @@ function loop() {
   else if (m00 > m11 && m00 > m22) { const s2 = Math.sqrt(1 + m00 - m11 - m22) * 2; qw = (m21 - m12) / s2; qx = s2 / 4; qy = (m01 + m10) / s2; qz = (m02 + m20) / s2; }
   else if (m11 > m22) { const s2 = Math.sqrt(1 + m11 - m00 - m22) * 2; qw = (m02 - m20) / s2; qx = (m01 + m10) / s2; qy = s2 / 4; qz = (m12 + m21) / s2; }
   else { const s2 = Math.sqrt(1 + m22 - m00 - m11) * 2; qw = (m10 - m01) / s2; qx = (m02 + m20) / s2; qy = (m12 + m21) / s2; qz = s2 / 4; }
-  const quat = [qw, qx, qy, qz];
+  let quat = [qw, qx, qy, qz];
+  if (S.spin) {   // extra rotation about body long axis (Y_b): q = q0 * qy(a)
+    const a = 1.2 * Math.sin(1.7 * t) + (qs.has('spinA') ? +qs.get('spinA') : 0), ca = Math.cos(a / 2), sa = Math.sin(a / 2);
+    quat = [qw * ca - qy * sa, qx * ca - qz * sa, qy * ca + qw * sa, qz * ca + qx * sa];
+  }
   const attach = [q[0] + D.d * Yv[0], q[1] + D.d * Yv[1], q[2] + D.d * Yv[2]];
   const L = Math.hypot(...attach);
   const springLength = slack ? P.springL0 : Math.max(L - P.cordLength, P.springL0);
-  scene.update({ q, attach, quat, ell, slack, springLength, tilt, params: P, derived: D });
+  let spring;
+  if (S.bow || S.twist) {
+    const M = S.M, nodes = new Float64Array(3 * M), phase = new Float64Array(M);
+    const A = [attach[0], attach[1], attach[2]], Ls = Math.max(L - P.cordLength, 1e-3);
+    // chord pivot -> spring end; bow sideways (perpendicular, in the swing plane normal) on a parabola-ish arc
+    const ux = A[0] / L, uy = A[1] / L, uz = A[2] / L;
+    let px = 1 - ux * ux, py = -ux * uy, pz = -ux * uz; const pl = Math.hypot(px, py, pz) || 1; px /= pl; py /= pl; pz /= pl;
+    const bowAmp = S.bow ? 0.035 * (1 + 0.5 * Math.sin(4 * t)) : 0;
+    for (let i = 0; i < M; i++) {
+      const s = i / (M - 1), off = bowAmp * Math.sin(Math.PI * s);
+      const rr = Ls * s;
+      nodes[3 * i] = ux * rr + px * off; nodes[3 * i + 1] = uy * rr + py * off; nodes[3 * i + 2] = uz * rr + pz * off;
+      phase[i] = 2 * Math.PI * 22 * s + (S.twist ? 2.5 * Math.sin(Math.PI * s) * Math.sin(5 * t) + 3 * s * Math.sin(2 * t) : 0);
+    }
+    spring = { nodes, phase };
+  }
+  scene.update({ spring, q, attach, quat, ell, slack, springLength, tilt, params: P, derived: D });
   requestAnimationFrame(loop);
 }
 loop();

@@ -27,6 +27,7 @@
 <div id="app">
   <aside id="panel">
     <section id="tuning"></section>
+    <details id="resonance" open></details>
     <div id="controls"></div>
   </aside>
   <main id="center">
@@ -48,17 +49,64 @@
   </main>
 </div>
 <dialog id="help">
-  <h2>About this simulator</h2>
+  <div class="help-head"><h2>About this simulator</h2><form method="dialog"><button class="btn">Close</button></form></div>
+  <div class="help-body">
   <p>A phone hangs from a coil spring (optionally via a cord, optionally in a case whose horns carry hex-nut ballast). It can bounce along the spring (radial mode, frequency <i>f<sub>r</sub></i>) and swing like a pendulum (frequency <i>f<sub>s</sub></i>). The two modes are nonlinearly coupled: when the spring is stretched the pendulum is longer, and swinging adds a centripetal pull on the spring.</p>
-  <p>When <i>f<sub>r</sub></i> = 2 <i>f<sub>s</sub></i> the coupling is resonant (autoparametric, 2:1 resonance): energy flows back and forth between bouncing and swinging. The de Sousa parameter <i>f</i> = <i>f<sub>s</sub></i>/<i>f<sub>r</sub></i> equals 0.25 at exact resonance.</p>
-  <h3>Two models</h3>
-  <p><b>Rigid body (realistic).</b> The phone is a 3D rigid body. Its inertia tensor is built from the phone, the case and the two nut stacks (plus extra mass and a share of the spring mass). The eyebolt is a frictionless ball joint: spring and cord pull at the attachment point and exert no moment. Besides bouncing and swinging, the phone can therefore rock about the eyebolt (an extra in-plane mode, <i>f</i><sub>rock</sub>) and spin. Rotation is damped by a separate rotational damping term (not yet calibrated against data). Here <i>f<sub>s</sub></i> is the lower in-plane swing mode, used for the 2:1 ratio.</p>
+  <p>When <i>f<sub>r</sub></i> = 2 <i>f<sub>s</sub></i> the coupling is resonant (autoparametric, 2:1 resonance): energy flows back and forth between bouncing and swinging. The de Sousa parameter <i>f</i> = (<i>f<sub>s</sub></i>/<i>f<sub>r</sub></i>)² = <i>m<sub>g</sub>g</i>/(<i>k R</i><sub>eq</sub>) equals 0.25 at exact resonance.</p>
+  <h3>Three models</h3>
+  <p><b>Elastic spring (most realistic, default).</b> The phone is a rigid body hanging from a helical spring that is itself simulated: it is cut into N segments with distributed mass, and each segment carries the exact strain energy of a helical wire (stretch, bending, torsion and the extension–twist "Wilberforce" coupling). The spring sags under its own weight, twists when loaded (the phone has a static yaw), can bend and swing, and has internal longitudinal (surge) modes. Wire diameter and turn count are either solved from the spring constant and mass, or given directly.</p>
+  <p><b>Rigid body.</b> The phone is a 3D rigid body; the spring is an ideal massless-core linear spring (with a lumped share of its mass) acting at the eyebolt, a frictionless ball joint. The phone can rock about the eyebolt (<i>f</i><sub>rock</sub>) and spin. Here <i>f<sub>s</sub></i> is the lower in-plane swing mode.</p>
   <p><b>Point mass (methods doc).</b> The phone is a point mass at its centre of mass, as in the methods document: no rocking, no spin, the spring axis always passes through the mass.</p>
-  <p>Energy is split into <i>E<sub>r</sub></i> (radial), <i>E<sub>s</sub></i> (swing), <i>E<sub>c</sub></i> (coupling) and, for the rigid body, <i>E</i><sub>rot</sub>; their sum <i>E</i><sub>rel</sub> is conserved without damping. The partition π<sub>r</sub> = <i>E<sub>r</sub></i>/(<i>E<sub>r</sub></i>+<i>E<sub>s</sub></i>) shows who holds the energy. The optional cord is massless, inextensible and may go slack (flagged SLACK). Damping is linear, quadratic or off.</p>
+  <p>Energy is split into <i>E<sub>r</sub></i> (radial), <i>E<sub>s</sub></i> (swing), <i>E<sub>c</sub></i> (coupling; for the elastic model also the spring's internal energy) and, for rigid bodies, <i>E</i><sub>rot</sub>; their sum is conserved without damping. The partition π<sub>r</sub> = <i>E<sub>r</sub></i>/(<i>E<sub>r</sub></i>+<i>E<sub>s</sub></i>) shows who holds the energy. The optional cord is massless, inextensible and may go slack (flagged SLACK).</p>
   <h3>Start position</h3>
   <p>Drag the phone in the 3D view to place it (the simulation pauses while you drag and restarts from the release point; the yellow marker shows the start). Or enter it numerically: Polar (stretch and angles) or Cartesian (offsets from equilibrium). For the rigid body you can also tilt the phone away from the spring line and give it initial rocking and spin rates; initial velocities are in the collapsible sub-section. Presets cover pure bounce, pure swing, mixed, rocking only and a sideways pull.</p>
-  <p>Use the tuning buttons to retune to 2:1 with cord length, nut ballast or spring constant. The lab dataset is 7.7% detuned.</p>
-  <form method="dialog"><button class="btn">Close</button></form>
+  <h3>Tuning and the real resonance</h3>
+  <p>The tuning buttons retune to <i>f<sub>r</sub></i> = 2 <i>f<sub>s</sub></i> (linear, small-amplitude theory) with cord length, nut ballast or spring constant. At real amplitudes the frequencies shift and the coupling is nonlinear, so the fastest and most complete energy exchange occurs at a slightly different setting. The panel "Find the real resonance" simulates the full model for your actual start condition, scans the knob and picks the value that maximises the exchange <i>η</i> (ties broken by the shortest exchange time). It runs in a Web Worker so the page stays responsive.</p>
+
+  <h3>Equations of motion</h3>
+  <p class="hnote">Pivot at the origin, +Z up, <i>g</i> gravity. <i>M</i> is the total hanging mass (phone + case + nuts + extra), <i>m<sub>s</sub></i> the spring mass, <i>k</i> the spring constant. The notation (·)<sub>+</sub> = max(·, 0) means the spring-plus-cord line only pulls (the cord can go slack).</p>
+
+  <h4>Point-mass model</h4>
+  <div class="eq">$$m_\mathrm{eff}\,\ddot{\mathbf q} = -k\,(\ell-R_0)_+\,\hat{\mathbf e}_r - m_g\,g\,\hat{\mathbf e}_Z + \mathbf F_d,\qquad m_\mathrm{eff}=M+\tfrac{m_s}{3},\quad m_g = M+\tfrac{m_s}{2}$$</div>
+  <p>\(\mathbf q\) is the position of the phone's centre of mass, \(\ell=|\mathbf q|\) its distance from the pivot, \(\hat{\mathbf e}_r=\mathbf q/\ell\) the radial unit vector, \(R_0\) the unstretched length of the spring-plus-cord line (to the mass). A third of the spring mass moves with the mass (inertia), half of it hangs on it (weight): that is the classic \(m_s/3\) correction. \(\mathbf F_d\) is damping: linear \(-c_R v_r\hat{\mathbf e}_r - c_T \mathbf v_\perp\), or quadratic \(-d_R|v_r|v_r\hat{\mathbf e}_r - d_T|\mathbf v_\perp|\mathbf v_\perp\).</p>
+
+  <h4>Rigid-body model</h4>
+  <div class="eq">$$M_c\,\dot{\mathbf v}_c = \mathbf F_s + \mathbf F_g + \mathbf F_d,\qquad \mathbf I\,\dot{\boldsymbol\omega} + \boldsymbol\omega\times\mathbf I\boldsymbol\omega = \sum \mathbf r\times\mathbf F + \boldsymbol\tau_d,\qquad \dot{q} = \tfrac12\, q\otimes(0,\boldsymbol\omega)$$</div>
+  <div class="eq">$$\mathbf F_s = -k\,(L-L_\mathrm{nat})_+\,\hat{\mathbf e},\qquad \hat{\mathbf e} = \mathbf a/L$$</div>
+  <p>\(M_c\) and \(\mathbf v_c\) are the mass and COM velocity of the phone body (including the lumped spring share), \(\mathbf I\) its inertia tensor about the COM (phone box, case, nut stacks, extra mass), \(\boldsymbol\omega\) the angular velocity, \(q\) the attitude quaternion (body to world). The spring pulls at the eyebolt \(\mathbf a\) (the attachment point), \(L=|\mathbf a|\) is the pivot-to-eyebolt distance and \(L_\mathrm{nat}\) the natural length of spring plus cord. The eyebolt is a ball joint, so the spring exerts only the force \(\mathbf F_s\) and the torque \(\mathbf r\times\mathbf F_s\) with \(\mathbf r\) = eyebolt minus COM. \(\boldsymbol\tau_d=-c_\mathrm{rot}\boldsymbol\omega-d_\mathrm{rot}|\boldsymbol\omega|\boldsymbol\omega\) is rotational air drag.</p>
+
+  <h4>Elastic-spring model</h4>
+  <p>The wire has diameter \(d\), Young's modulus \(E\), shear modulus \(G\); its bending and torsion rigidities are</p>
+  <div class="eq">$$B=\frac{E\pi d^4}{64},\qquad C=\frac{G\pi d^4}{32}$$</div>
+  <p>The spring (mean coil radius \(R_0\), \(n\) active turns, wire length \(\ell\)) is divided into \(N\) segments, each with \(n_s=n/N\) turns and wire length \(\ell_s=\ell/N\). A segment is a uniform helix of wire, described by its axial length \(L_s\) and its twist \(\psi\) (positive = winding up more turns). Because the wire is inextensible,</p>
+  <div class="eq">$$\sin\alpha=\frac{L_s}{\ell_s},\qquad R=\frac{\ell_s\cos\alpha}{2\pi\,(n_s+\psi/2\pi)},\qquad \kappa=\frac{\cos^2\alpha}{R},\qquad \tau=\frac{\sin\alpha\cos\alpha}{R}$$</div>
+  <p>where \(\alpha\) is the helix (pitch) angle, \(R\) the coil radius, \(\kappa\) the curvature and \(\tau\) the torsion of the wire's centreline. The exact elastic energy of a segment (Love's finite-deformation helical-spring theory) is</p>
+  <div class="eq">$$U_\mathrm{helix}(L_s,\psi)=\ell_s\Big[\tfrac12 B(\kappa-\kappa_0)^2+\tfrac12 C(\tau-\tau_0)^2\Big]$$</div>
+  <p>with \(\kappa_0,\tau_0\) the values of the unloaded spring. The axial force and axial couple follow as \(W=\partial U/\partial L_s\) and \(K=\partial U/\partial\psi\). For a close-coiled spring this gives \(k=Gd^4/(8D^3n)\) and a twist stiffness \(E d^4/(64\,D\,n)\) (\(D=2R_0\)); because \(\alpha\) and \(R\) depend on \(L_s\), the spring is genuinely nonlinear at large stretch, and the cross term between \(L_s\) and \(\psi\) is the extension–twist (Wilberforce) coupling. Extra terms: a stiff penalty when the coils touch (\(L_s &lt; n_s d\)), and an optional constant initial tension for close-wound springs.</p>
+  <p>Between neighbouring segments the wire's bending is a rotational spring and the segment chord can shear:</p>
+  <div class="eq">$$U_b=\tfrac12\,k_b\,|\boldsymbol\theta_\perp|^2,\qquad k_b=\frac{2BC}{\ell_s\,(B+C)}$$</div>
+  <p>\(\boldsymbol\theta_\perp\) is the bending (swing) part of the relative rotation of two neighbouring nodes; \(k_b\) comes from Haringx's equivalent-beam rigidity of a helical spring. The sideways (shear) offset \(s_\perp\) of a segment's chord relative to its node frame stores \(\tfrac12 k_{sh}|\mathbf s_\perp|^2\) with \(k_{sh}=\dfrac{2N}{\ell R_0^2\,(\cos^2\alpha_0/B+\sin^2\alpha_0/C)}\) (unloaded-spring estimate, derived for this simulator).</p>
+  <p><b>Calibration.</b> The wire diameter \(d\) and turn count \(n\) are solved so that the wire mass equals the measured spring mass \(m_s\) and the spring's <i>tangent</i> stiffness, at the hanging load where \(k\) was measured (\(k_\mathrm{ref\,load}\), default 211.2 g — the lab measurement), equals \(k\). Because an open-coiled spring stiffens slightly as it stretches, its unloaded stiffness is a little lower than \(k\).</p>
+  <p>Each interior node \(i\) is a small rigid body (mass \(m_i\), rotational inertia \(\mathbf J_i\), position \(\mathbf x_i\), angular velocity \(\boldsymbol\omega_i\)). With \(U\) the total elastic energy of all segments and joints:</p>
+  <div class="eq">$$m_i\,\ddot{\mathbf x}_i = -\frac{\partial U}{\partial\mathbf x_i} - m_i g\,\hat{\mathbf e}_Z + \mathbf f_d,\qquad \mathbf J_i\dot{\boldsymbol\omega}_i+\boldsymbol\omega_i\times\mathbf J_i\boldsymbol\omega_i = -\frac{\partial U}{\partial\boldsymbol\varphi_i} + \boldsymbol\tau_d$$</div>
+  <p>\(\partial U/\partial\boldsymbol\varphi_i\) is the torque conjugate to a small rotation of node \(i\). Forces and torques are the exact negative gradient of the energy, so energy is conserved without damping. The top end is fixed (its twist locked or free), the lower end is the eyebolt of the phone, which obeys the rigid-body equations above plus the spring force and torque from the last segment. With a cord, the spring's lower end is a free node and the cord is a tension-only element (stiffness 2000 N/m, smoothed over its first millimetre) to the eyebolt, so it transmits neither twist nor bending. Damping: a dashpot on \(\dot L_s\) in each segment (total \(c_R\)), a torsional dashpot (total \(c_\mathrm{twist}\)), no bending dashpot, and air drag on the phone as in the rigid model.</p>
+
+  <h4>Resonance</h4>
+  <div class="eq">$$\text{linear: } f_r = 2 f_s\ \ (\text{ratio } f_r/2f_s=1),\qquad \text{nonlinear: } \eta=\max_t\,|\pi_s(t)-\pi_s(0)|,\quad \pi_s=\frac{E_s}{E_r+E_s}$$</div>
+  <p>The linear condition comes from the eigen-analysis of the small-oscillation problem about equilibrium. The nonlinear definition uses the full simulation: the real resonance is the knob value (cord length, nuts or spring constant) that maximises the energy transfer \(\eta\) from your start condition; among near-equal values the one with the shortest exchange time \(t_\mathrm{ex}\) wins.</p>
+
+  <h3>How the simulation is computed in real time</h3>
+  <p><b>State.</b> Point mass: position and velocity (6 numbers). Rigid body: COM position and velocity, attitude quaternion and angular velocity (13). Elastic: the same 13 numbers for the phone plus 13 for each of the N−1 interior spring nodes.</p>
+  <p><b>Forces.</b> Every force and torque is evaluated analytically as the exact negative gradient of the potential energy (springs, bending, torsion, gravity), plus damping. That is why the energy bookkeeping closes.</p>
+  <p><b>Integration.</b> The equations are written as \(\dot{\mathbf y}=\mathbf f(\mathbf y)\) and advanced with the classical fourth-order Runge–Kutta method at a fixed step \(h\) (1 ms for the point and rigid models; for the elastic model the largest stable step, \(h=\min(1\,\mathrm{ms},\,1.5/\omega_\mathrm{max})\), from the highest frequency of the linearised spring):</p>
+  <div class="eq">$$\mathbf k_1=\mathbf f(\mathbf y_n),\quad \mathbf k_2=\mathbf f\!\big(\mathbf y_n+\tfrac h2\mathbf k_1\big),\quad \mathbf k_3=\mathbf f\!\big(\mathbf y_n+\tfrac h2\mathbf k_2\big),\quad \mathbf k_4=\mathbf f(\mathbf y_n+h\,\mathbf k_3)$$</div>
+  <div class="eq">$$\mathbf y_{n+1}=\mathbf y_n+\tfrac h6\,(\mathbf k_1+2\mathbf k_2+2\mathbf k_3+\mathbf k_4)$$</div>
+  <p>After each step all quaternions are renormalised to unit length, so the attitudes stay valid rotations.</p>
+  <p><b>Frame loop.</b> Each animation frame adds <i>speed</i> × (frame time) to a time accumulator, capped at 0.1 s so that a slow or background tab never tries to catch up all at once. The accumulator is drained in chart-sample intervals of 1/60 s of simulated time, each made of about \(\mathrm{speed}\cdot\mathrm{frameTime}/h\) RK4 substeps of size at most \(h\). If the (heavier) elastic model cannot keep up with real time, the frame work is limited and the speed is lowered automatically; the readout then shows e.g. "running at 0.6× real time".</p>
+  <p><b>Equilibrium and modes.</b> The hanging equilibrium is found by Newton's method on the static force balance (for the elastic model including the spring's sag and the static yaw). The small-oscillation modes come from the generalised eigenproblem \(\mathbf K\mathbf u=\omega^2\mathbf M\mathbf u\) of the linearised system (Jacobi iteration); the modes are classified by which coordinates they involve (bounce, swing, rocking, twist, surge). Retuning to 2:1 is a bisection on the frequency ratio.</p>
+  <p><b>Nonlinear resonance search.</b> It runs many full simulations in a Web Worker (a separate thread) so the page stays responsive: the knob is scanned around the linear estimate, then refined by golden-section search, measuring \(\eta\) and \(t_\mathrm{ex}\) from the energy partition each time. Cancel stops it between simulations.</p>
+  <p class="hnote">Equations are typeset with KaTeX (loaded from a CDN the first time this dialog opens; without internet the LaTeX source is shown instead).</p>
+  </div>
 </dialog>
 </body>
 </html>

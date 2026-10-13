@@ -3,7 +3,12 @@ const D2R = Math.PI / 180;
 const R2D = 180 / Math.PI;
 const isQuad = p => p.dampingModel === 'quadratic';
 const isLin = p => p.dampingModel === 'linear';
-const isRigid = p => p.model === 'rigid';
+const isRigid = p => p.model === 'rigid' || p.model === 'elastic';   // phone is a rigid body (rigid + elastic models)
+const isElastic = p => p.model === 'elastic';
+const elDirect = p => isElastic(p) && p.springGeometry === 'direct';
+const elFromK = p => isElastic(p) && p.springGeometry !== 'direct';
+const elCustom = p => isElastic(p) && p.wireMaterial === 'custom';
+const kVisible = p => !elDirect(p);
 const isPolar = p => p.icMode !== 'cartesian';
 const isCart = p => p.icMode === 'cartesian';
 const rigidLin = p => isRigid(p) && isLin(p);
@@ -54,10 +59,27 @@ export const SCHEMA = [
     { type: 'info', id: 'M', label: 'Total hanging mass M' },
   ]},
   { id: 'spring', title: 'Spring & cord', controls: [
-    { key: 'springK', label: 'Spring constant k', unit: 'N/m', scale: 1, min: 2, max: 80, step: 0.01, tip: 'Hooke spring constant.' },
-    { key: 'springL0', label: 'Free length L0', unit: 'cm', scale: 100, min: 5, max: 50, step: 0.1, tip: 'Unstretched spring length.' },
-    { key: 'springMass', label: 'Spring mass', unit: 'g', scale: 1000, min: 0, max: 50, step: 0.1, tip: 'Spring mass (a fraction adds to the effective mass).' },
+    { key: 'springGeometry', type: 'seg', options: [['fromK', 'From k & mass'], ['direct', 'Wire & turns']], showIf: isElastic, tip: 'Elastic model: either solve the wire diameter and turn count from k and the spring mass, or enter them directly.' },
+    { key: 'springK', label: 'Spring constant k', unit: 'N/m', scale: 1, min: 2, max: 80, step: 0.01, showIf: kVisible, tip: 'Measured spring constant. Elastic model: by default this is the tangent stiffness at the reference load below (k from a bounce frequency or a Hooke test is measured under load).' },
+    { key: 'kCalibration', type: 'seg', options: [['loaded', 'k measured under load'], ['unloaded', 'k of unloaded spring']], showIf: p => isElastic(p) && p.springGeometry !== 'direct', tip: 'An open-coiled spring stiffens slightly as it stretches, so say whether k was measured with a load hanging (bounce frequency, Hooke test) or is the unloaded small-deflection value.' },
+    { key: 'kRefLoad', label: 'Load when k was measured', unit: 'g', scale: 1000, min: 10, max: 1000, step: 0.1, showIf: p => isElastic(p) && p.springGeometry !== 'direct' && p.kCalibration !== 'unloaded', tip: 'Hanging mass during the k measurement (default 211.2 g: the lab dataset, where k = 18.95 N/m was inferred from the bounce frequency). The spring geometry depends on this, not on the current phone/case/nuts.' },
+    { key: 'springL0', label: 'Free length L0', unit: 'cm', scale: 100, min: 5, max: 50, step: 0.1, tip: 'Unstretched (active) spring length.' },
+    { key: 'springMass', label: 'Spring mass', unit: 'g', scale: 1000, min: 0, max: 50, step: 0.1, showIf: kVisible, tip: 'Spring mass (the elastic model distributes it along the coils).' },
     { key: 'cordLength', label: 'Cord length', unit: 'cm', scale: 100, min: 0, max: 60, step: 0.1, tip: 'Massless inextensible cord between spring and phone (can go slack).' },
+    { key: 'coilDiameter', label: 'Coil diameter D', unit: 'mm', scale: 1000, min: 8, max: 60, step: 0.1, showIf: isElastic, tip: 'Mean coil diameter.' },
+    { key: 'wireMaterial', type: 'select', label: 'Wire material', options: [['steel', 'Steel (E 200, G 79.3 GPa)'], ['stainless', 'Stainless (E 193, G 69 GPa)'], ['custom', 'Custom']], showIf: isElastic, tip: 'Wire material (Young and shear moduli, density).' },
+    { key: 'wireE', label: 'Young modulus E', unit: 'GPa', scale: 1e-9, min: 10, max: 400, step: 1, showIf: elCustom, tip: 'Custom wire Young modulus.' },
+    { key: 'wireG', label: 'Shear modulus G', unit: 'GPa', scale: 1e-9, min: 5, max: 200, step: 0.5, showIf: elCustom, tip: 'Custom wire shear modulus.' },
+    { key: 'wireRho', label: 'Density ρ', unit: 'kg/m³', scale: 1, min: 1000, max: 20000, step: 10, showIf: elCustom, tip: 'Custom wire density.' },
+    { key: 'wireDiameter', label: 'Wire diameter', unit: 'mm', scale: 1000, min: 0.2, max: 3, step: 0.01, showIf: elDirect, tip: 'Wire diameter (direct mode).' },
+    { key: 'activeTurns', label: 'Active turns n', unit: '', scale: 1, min: 3, max: 80, step: 0.1, showIf: elDirect, tip: 'Number of active turns (direct mode).' },
+    { key: 'springHand', type: 'seg', options: [['right', 'Right-handed'], ['left', 'Left-handed']], showIf: isElastic, tip: 'Winding sense of the helix.' },
+    { key: 'initialTension', label: 'Initial tension', unit: 'N', scale: 1, min: 0, max: 2, step: 0.01, showIf: isElastic, tip: 'Pre-tension of a close-wound spring (phenomenological constant extra tension).' },
+    { key: 'springSegments', label: 'Segments N', unit: '', scale: 1, min: 6, max: 40, step: 1, int: true, showIf: isElastic, tip: 'Number of spring segments in the discretisation (more = more accurate and slower).' },
+    { key: 'topTwist', type: 'seg', options: [['locked', 'Top twist locked'], ['free', 'Top twist free']], showIf: isElastic, tip: 'Whether the top hook prevents the spring from twisting about its axis.' },
+    { key: 'eyeTwist', type: 'seg', options: [['locked', 'Eye twist locked'], ['free', 'Eye twist free']], showIf: isElastic, tip: 'Whether the eyebolt transmits twist between spring and phone.' },
+    { key: 'cTwist', label: 'Twist damping c_twist', unit: '×10⁻⁶ N·m·s/rad', scale: 1e6, min: 0, max: 100, step: 0.01, showIf: isElastic, tip: 'Internal torsional dissipation of the whole spring.' },
+    { type: 'box', id: 'springBox', title: 'Derived spring', showIf: isElastic },
   ]},
   { id: 'damping', title: 'Damping', controls: [
     { key: 'dampingModel', type: 'select', label: 'Model', options: [['none', 'None'], ['linear', 'Linear'], ['quadratic', 'Quadratic']], tip: 'Velocity-dependent damping law.' },
@@ -90,7 +112,7 @@ function decimals(step) { const s = String(step); const i = s.indexOf('.'); retu
  */
 export function buildControls(container, handlers) {
   const ctls = {};   // key -> {def, range, num, row, el}
-  const infos = {}, btns = {};
+  const infos = {}, btns = {}, boxes = {};
   const rows = [];   // for showIf
   function addControls(list, body) {
     for (const c of list) {
@@ -120,6 +142,8 @@ export function buildControls(container, handlers) {
           if (b.id) btns[b.id] = btn;
           row.appendChild(btn);
         }
+      } else if (c.type === 'box') {
+        row.className = 'dbox'; row.innerHTML = `<div class="dbox-t">${c.title}</div><div class="dbox-b mono"></div>`; boxes[c.id] = row.lastChild;
       } else if (c.type === 'info') {
         row.className = 'info'; row.innerHTML = `<span>${c.label}</span><b>–</b>`; infos[c.id] = row.lastChild;
       } else if (c.type === 'checkbox') {
@@ -180,6 +204,7 @@ export function buildControls(container, handlers) {
       }
       updateVisibility(params);
     },
+    setBox(id, html) { if (boxes[id]) boxes[id].innerHTML = html; },
     setInfo(id, text) { if (infos[id]) infos[id].textContent = text; },
     setButtonLabel(id, text) { if (btns[id]) btns[id].textContent = text; },
     updateVisibility,

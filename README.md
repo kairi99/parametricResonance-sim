@@ -4,7 +4,7 @@
 
 A browser-based 3D simulator of a smartphone hanging from a coil spring (optionally via a cord, optionally in a 3D-printed case whose horns carry M8 nut ballast). The bounce (radial) and swing modes are coupled; at f_r = 2 f_s (de Sousa parameter f = 0.25) energy flows back and forth between bouncing and swinging (2:1 autoparametric resonance). Live charts show the displacements, the energy exchange E_r / E_s / E_c, the horizontal footprint and resonance diagnostics.
 
-Two selectable models (realistic rigid body, or the point-mass model of the methods document) and drag-to-place start positions.
+Three selectable models (a discretised **elastic helical spring** with the rigid phone — the most realistic and the default —, the rigid body on an ideal spring, or the point-mass model of the methods document), a nonlinear simulation-based **resonance search**, and drag-to-place start positions. The help dialog (?) contains the equations of motion (KaTeX) and the real-time algorithm.
 
 Plain ES modules, no build step. Three.js is loaded from jsDelivr through an import map (internet needed).
 
@@ -28,6 +28,21 @@ The site is plain static files (no build step). "Deploy from a branch" can only 
 
 `.nojekyll` is already present, and all paths are relative, so the site works from any sub-path. Three.js is loaded from the jsDelivr CDN, so the page needs internet access.
 
+### Auto-sync (how the live site is published)
+
+The live site is option 1: the public repo `kairi99/parametricResonance-sim` holds a copy of this folder and serves it with Pages. **Edit the simulator in the private repo's `simulator/` folder only** — the workflow `.github/workflows/sync-simulator.yml` runs on every push to `main` that touches `simulator/`, runs the physics tests, and (only if they pass) mirrors the folder into the public repo, which republishes the site within about a minute. Changes made directly in the public repo are overwritten by the next sync. It can also be run by hand from the Actions tab ("Run workflow").
+
+One-time setup (a write deploy key on the public repo, its private half as the secret `SIM_DEPLOY_KEY` in the private repo):
+
+```sh
+ssh-keygen -t ed25519 -N "" -C "parametricResonance sync" -f /tmp/sim_sync_key
+gh repo deploy-key add /tmp/sim_sync_key.pub -R kairi99/parametricResonance-sim --allow-write --title "sync from parametricResonance"
+gh secret set SIM_DEPLOY_KEY -R kairi99/parametricResonance < /tmp/sim_sync_key
+rm -f /tmp/sim_sync_key /tmp/sim_sync_key.pub
+```
+
+Until the secret exists the workflow skips with a notice instead of failing.
+
 ## Tests
 
 ```sh
@@ -42,18 +57,29 @@ node --test tests/physics.test.mjs
 - `index.html`, `css/style.css` — layout and styling
 - `js/main.js` — wiring, fixed-timestep loop, presets, CSV export, share link
 - `js/ui.js` — declarative control schema -> control panel
-- `js/charts.js` — hand-rolled canvas `StripChart` and `XYChart`
-- `js/physics.js` — physics engine (RK4)
+- `js/charts.js` — hand-rolled canvas `StripChart`, `XYChart` and `ScanChart`
+- `js/physics.js`, `js/elastic.js` — physics engine (RK4); the elastic-spring model
+- `js/resonance.js`, `js/resonance-worker.js` — nonlinear resonance search (runs in a Web Worker)
 - `js/scene.js` — Three.js scene
 
 ## Models
 
-Choose the model at the top of the Tuning panel (`model` parameter).
+Choose the model at the top of the Tuning panel (`model` parameter: `elastic` (default) | `rigid` | `point`).
+
+- **Elastic spring (most realistic, default).** The rigid phone hangs from a helical spring that is simulated as `N` (`springSegments`, 6–40) segments with distributed mass. Each segment carries the exact strain energy of a uniform helix of inextensible wire, `U = ℓs [½B(κ−κ0)² + ½C(τ−τ0)²]` with `sinα = Ls/ℓs`, `R = ℓs cosα / 2π(ns+ψ/2π)`, `κ = cos²α/R`, `τ = sinα cosα/R`, `B = Eπd⁴/64`, `C = Gπd⁴/32` (Love's finite-deformation theory). Axial length `Ls` and winding twist `ψ` are coupled, which gives the nonlinear stretch and the extension–twist (Wilberforce) coupling; its small-deflection limit reproduces the open-coiled-spring results of Timoshenko/Love and `k = Gd⁴/(8D³n)`. Further terms: coil contact penalty, optional initial tension, inter-segment bending (`k_b = 2BC/(ℓs(B+C))`, Haringx's equivalent beam), shear of the segment chord. The hanging equilibrium (non-uniform sag, static yaw `yawEq`) and the linear modes (`fR`, `fS`, `fS2`, `fSy`, `fSy2`, `fTwist`, `fSurge`) come from Newton + eigen-analysis; the RK4 step is `derived.dt = min(1 ms, 1.5/ω_max)`. Forces and torques are exact energy gradients, so the energy is conserved without damping. Chart extras: yaw ψ, the spring's kinetic energy (its elastic energy trades large amounts against gravity at every bounce, ≈ k·stretch·x, so it is exported to the CSV but not charted), `E_c` includes the spring's internal energy. If the browser cannot keep up with real time the effective speed is lowered automatically ("running at 0.6× real time").
 
 - **Rigid body (realistic, default).** The phone is a 3D rigid body. The inertia tensor is assembled from the phone (uniform box), the case (box), the two nut stacks (point masses on the long axis), extra mass and a lumped share of the spring mass (inertial m_spring/3 at the attachment point, gravity load m_spring/2). The eyebolt is an ideal frictionless ball joint: spring and cord (in series, tension-only) act at the attachment point and exert no moment. Equations of motion are Newton plus Euler's equations, integrated with RK4 (quaternion attitude). Damping acts along the spring line (radial), on the transverse COM motion, and rotationally (`cRot` linear / `dRot` quadratic; not yet calibrated against data). The extra rotational degree of freedom adds a rocking mode.
 - **Point mass (methods document).** The v1 model: the phone is a point mass at its COM; the displayed orientation simply follows the spring line.
 
 Linearised mode analysis (per plane, 2 DOF: spring angle θ1 and body angle θ2): link 1 has length Leq, point inertia m1 = m_spring/3 and gravity load m_spring/2 at its end; the body (mass M, inertia I about its COM) has its COM a distance d below the joint. Mass matrix [[(m1+M)a², M a b], [M a b, M b² + I]], stiffness diag[(m1g+M) g a, M g b] with a = Leq, b = d. The generalised eigenproblem gives the lower and upper swing modes; `fS` is the **lower in-plane (X–Z) mode**, the one used for the 2:1 ratio f_r/(2 f_s). `fS2` is the upper in-plane mode (rocking about the eyebolt), `fSy`/`fSy2` the out-of-plane pair. For the point model `fS` is the v1 pendulum frequency and the others are undefined.
+
+### Elastic-model parameters
+
+`springGeometry` (`fromK` default: solve wire diameter and turns from `springK`, `springMass`, `springL0`, `coilDiameter` and the material; or `direct`: `wireDiameter`, `activeTurns`), `kCalibration` (`loaded` default: `springK` is the spring's tangent stiffness at the hanging load `kRefLoad` = 211.2 g where it was measured — the lab dataset inferred k = 18.95 N/m from the bounce frequency with that load; `unloaded`: `springK` is the small-deflection stiffness of the unloaded spring. An open-coiled spring stiffens slightly as it stretches, so the two differ by a few per cent; with `loaded` the elastic model reproduces the measured lab bounce frequency, 1.5006 Hz vs 1.50026 Hz), `coilDiameter` (22 mm), `wireMaterial` (`steel` E 200 GPa / G 79.3 GPa / ρ 7850; `stainless` 193 / 69 / 8000; `custom` uses `wireE`, `wireG`, `wireRho`), `springHand` (`right`|`left`), `initialTension` (N, 0), `springSegments` (12), `topTwist` / `eyeTwist` (`locked`|`free`: whether the top hook / eyebolt transmit twist), `cTwist` (internal torsional damping of the whole spring, 10⁻⁶ N·m·s/rad). The "Derived spring" box shows wire Ø, turns, helix angle, wire length, `k_lin` vs `k_tangent`, `k_twist`, the extension–twist coupling, the model spring mass and `dt`. The tuning panel adds `f_twist`, `f_surge`, the textbook `f_r = √(k/(M+m_s/3))/2π` and the static yaw.
+
+## Finding the real resonance
+
+Linear theory says "tune to `f_r = 2 f_s`". At real amplitudes the frequencies shift and the coupling is nonlinear, so the panel **Find the real resonance (nonlinear simulation)** runs the full model (any of the three) from your actual start condition: for each value of the chosen knob (cord length, nuts per side or spring constant; ~21 values around the linear estimate, then a golden-section refinement) it simulates up to the chosen length and measures the exchange `η = max_t |π_s(t) − π_s(0)|` (`π_s = E_s/(E_r+E_s)`) and the exchange time. The best value maximises `η` and, among near-equal values, has the shortest exchange time. The chart shows `η` and `t_ex` vs the knob with the linear estimate marked; **Apply** sets the knob. **Measure nonlinear frequencies** runs a pure bounce and a pure swing at the current amplitudes and compares `f_r`, `f_s` and the ratio with the linear ones. The search runs in a Web Worker (`js/resonance-worker.js`); Cancel stops it. For the elastic model the 2:1 tuning buttons also run in the worker.
 
 ## Start position
 
@@ -80,7 +106,8 @@ The "Tuning" panel shows derived values, a resonance gauge (0.8–1.2, green ban
 | c_R, c_T | 3.2, 2.4 ×10⁻³ kg/s | 0–30 |
 | d_R, d_T | 10.4, 9.4 ×10⁻³ | 0–60 |
 | g | 9.767 m/s² | 1–25 (presets: lab, standard, Moon) |
-| Model (`model`) | rigid | rigid / point |
+| Model (`model`) | elastic | elastic / rigid / point |
+| Elastic spring: `springGeometry`, `kCalibration`, `kRefLoad`, `coilDiameter`, `wireMaterial`, `wireE/G/Rho`, `wireDiameter`, `activeTurns`, `springHand`, `initialTension`, `springSegments`, `topTwist`, `eyeTwist`, `cTwist` | fromK, loaded, 211.2 g, 22 mm, steel, –, 0.82 mm, 22, right, 0, 12, locked, locked, 1e-6 | see above |
 | c_rot (`cRot`), rigid only, linear | 2×10⁻⁵ N·m·s | 0–50 ×10⁻⁵ |
 | d_rot (`dRot`), rigid only, quadratic | 2×10⁻⁶ N·m·s² | 0–50 ×10⁻⁶ |
 | Start mode (`icMode`) | polar | polar / cartesian |
@@ -91,7 +118,11 @@ The "Tuning" panel shows derived values, a resonance gauge (0.8–1.2, green ban
 | Initial velocity vx0, vy0, vz0 | 0 | ±50 cm/s |
 | Speed / chart window | 1× / 30 s | 0.1–5× / 10–120 s |
 
-Any parameter change restarts the simulation at t = 0. "Copy share link" encodes all parameters in the URL query string (restored on load); `?paused` starts paused. "Export CSV" downloads the history since the last reset (two leading comment lines `# model=…` and `# params={…}`, then t, X, Y, Z, x, alpha, beta, Er, Es, Ec, Erel, Emech, dPhi, partitionR, tilt, tiltY, Erot, qw, qx, qy, qz, attachX, attachY, attachZ; SI units and radians, capped at 200 000 rows).
+Any parameter change restarts the simulation at t = 0. "Copy share link" encodes all parameters in the URL query string (restored on load); `?paused` starts paused. "Export CSV" downloads the history since the last reset (two leading comment lines `# model=…` and `# params={…}`, then t, X, Y, Z, x, alpha, beta, Er, Es, Ec, Erel, Emech, dPhi, partitionR, tilt, tiltY, Erot, qw, qx, qy, qz, attachX, attachY, attachZ, yaw, twistTotal, EspringKin, EspringEl; SI units and radians, capped at 200 000 rows).
+
+## Literature
+
+A. E. H. Love, *A Treatise on the Mathematical Theory of Elasticity* (4th ed., §§270–271, helical springs, finite deformation); S. Timoshenko, *Strength of Materials* II (open-coiled helical springs); J. A. Haringx, Philips Res. Rep. 4 (1949) (equivalent-beam rigidities of helical springs); A. M. Wahl, *Mechanical Springs*; R. E. Berg & T. S. Marshall, Am. J. Phys. 59, 32 (1991) (Wilberforce pendulum); Torzo et al., *The Wilberforce pendulum: a complete analysis*; Christensen, Am. J. Phys. 72, 818 (2004) (effective mass of the resonant spring pendulum).
 
 ## Credits
 

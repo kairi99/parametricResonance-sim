@@ -1,6 +1,8 @@
 // Elastic (spring) pendulum physics engine. Dependency-free ES module (browser + Node).
 // SI units. Pivot at origin, +Z up. q = COM position relative to pivot.
 
+import { deriveElastic, createElasticState, stepElastic, observablesElastic, unwrapYaw } from './elastic.js';
+
 export const DEFAULT_PARAMS = {
   phoneMass: 0.177,
   phoneLength: 0.1496,
@@ -25,7 +27,10 @@ export const DEFAULT_PARAMS = {
   alpha0: 2 * Math.PI / 180,
   beta0: 0.5 * Math.PI / 180,
   vx0: 0, vy0: 0, vz0: 0,
-  model: 'rigid',
+  model: 'elastic',
+  springGeometry: 'fromK', coilDiameter: 0.022, wireMaterial: 'steel', wireE: 200e9, wireG: 79.3e9, wireRho: 7850,
+  wireDiameter: 0.00082, activeTurns: 22, springHand: 'right', initialTension: 0, springSegments: 12,
+  kCalibration: 'loaded', kRefLoad: 0.2112, topTwist: 'locked', eyeTwist: 'locked', cTwist: 1e-6,
   cRot: 2e-5,
   dRot: 2e-6,
   icMode: 'polar',
@@ -87,6 +92,18 @@ export function derive(params) {
   const fDeSousa = mG * p.gravity / (p.springK * Req);
   const inertia = assemblyInertia(p);
 
+  if (p.model === 'elastic') {
+    const ed = deriveElastic(p, { M, d, inertia });
+    const w = ed.warnings;
+    if (!Number.isInteger(p.nutsPerSide) || p.nutsPerSide < 0) w.push('nutsPerSide must be a non-negative integer.');
+    for (const k of ['phoneMass', 'phoneLength', 'phoneWidth', 'phoneThickness', 'nutMass', 'springK', 'springL0', 'springMass', 'gravity', 'coilDiameter'])
+      if (!(p[k] > 0)) w.push(`${k} must be > 0.`);
+    if (p.caseMass < 0 || p.extraMass < 0 || p.cordLength < 0 || p.attachmentOffset < 0) w.push('caseMass, extraMass, cordLength and attachmentOffset must be >= 0.');
+    if (Math.abs(p.alpha0) > 30 * Math.PI / 180) w.push('|alpha0| > 30 deg: small-angle analysis degrades.');
+    if (p.x0 > ed.Leq - ed.Lnat) w.push('x0 exceeds the static stretch: spring/cord may go slack at the top of the bounce.');
+    return ed;
+  }
+
   // rigid-body constants: assembly + inertial spring share m1 at the attachment point form one rigid body
   const m1 = p.springMass / 3, Mt = M + m1;
   const s1 = m1 * d / Mt, s2 = M * d / Mt; // inertial COM is s1 above assembly COM, s2 below the attachment
@@ -121,7 +138,7 @@ export function derive(params) {
   const minOffset = 0.020 + 0.0065 * p.nutsPerSide;
   if (p.nutsPerSide > 0 && p.attachmentOffset < minOffset) warnings.push(`Top nut stack does not fit below the eyebolt eye: attachment offset should be at least ${(minOffset * 1000).toFixed(0)} mm for ${p.nutsPerSide} nuts per side.`);
 
-  return { model: p.model, M, d, mEff, mG, Lnat, Leq, R0, staticStretch, Req, omegaR, omegaS, fR, fS, fS2, fSy, fSy2, ratio, fDeSousa, detuningPct, periodR, periodS, inertia, rig, warnings };
+  return { dt: 1e-3, fTwist: NaN, fSurge: NaN, kLin: p.springK, yawEq: 0, model: p.model, M, d, mEff, mG, Lnat, Leq, R0, staticStretch, Req, omegaR, omegaS, fR, fS, fS2, fSy, fSy2, ratio, fDeSousa, detuningPct, periodR, periodS, inertia, rig, warnings };
 }
 
 // ---- orientation helpers ----
@@ -189,6 +206,7 @@ export function createState(params, derived) {
     omega[1] = R[1] * wx + R[4] * wy + R[7] * wz;
     omega[2] = R[2] * wx + R[5] * wy + R[8] * wz;
   }
+  if (p.model === 'elastic') return createElasticState(p, dv, { q, v: [p.vx0, p.vy0, p.vz0], quat, omega });
   return { t: 0, q, v: [p.vx0, p.vy0, p.vz0], quat, omega };
 }
 
@@ -257,6 +275,7 @@ function stepPoint(state, p, dv, dt) {
 }
 
 export function step(state, params, derived, dt) {
+  if (params.model === 'elastic') return stepElastic(state, params, derived, dt);
   if (params.model === 'point') return stepPoint(state, params, derived, dt);
   return stepRigid(state, params, derived, dt);
 }
@@ -379,6 +398,7 @@ function stepRigid(state, p, dv, dt) {
 
 export function advance(state, params, derived, duration, maxDt = 0.001) {
   if (!(duration > 0)) return state;
+  if (params.model === 'elastic' && derived.dt < maxDt) maxDt = derived.dt;
   const n = Math.max(1, Math.ceil(duration / maxDt - 1e-9));
   const dt = duration / n;
   for (let i = 0; i < n; i++) step(state, params, derived, dt);
@@ -393,6 +413,7 @@ function wrapPi(a) {
 
 export function observables(state, params, derived) {
   const p = withDefaults(params), dv = derived;
+  if (p.model === 'elastic') return observablesElastic(state, p, dv);
   const rigid = p.model !== 'point';
   const [X, Y, Z] = state.q;
   const [vx, vy, vz] = state.v;
@@ -465,6 +486,8 @@ export function observables(state, params, derived) {
     slack, springLength,
     Er, Es, Ec, Erel, Emech, Erot, partitionR, phiR, phiS, dPhi, ampR, ampS,
     attach, quat, tilt, tiltY, omega,
+    spring: { nodes: new Float64Array([0, 0, 0, attach[0], attach[1], attach[2]]), phase: new Float64Array([0, 2 * Math.PI * 22]) },
+    yaw: rigid ? unwrapYaw(state, rotMatrix(quat, new Float64Array(9), 0)) : 0, twistTotal: 0, EspringKin: 0, EspringEl: 0,
   };
 }
 
@@ -478,7 +501,19 @@ function bisect(f, lo, hi) {
   return 0.5 * (lo + hi);
 }
 
+function bisectN(f, lo, hi, maxIter = 38) {
+  let flo = f(lo);
+  for (let i = 0; i < maxIter; i++) {
+    const mid = 0.5 * (lo + hi), fm = f(mid);
+    if (Math.abs(fm) < 1e-9 || hi - lo < 1e-9 * (Math.abs(hi) + 1e-12)) return mid;
+    if ((fm < 0) === (flo < 0)) { lo = mid; flo = fm; } else hi = mid;
+  }
+  return 0.5 * (lo + hi);
+}
+
 function solveRigid(p, knob) {
+  const elastic = p.model === 'elastic';
+  const bisect_ = elastic ? bisectN : bisect;
   const out = (value, np, feasible, note) => ({ value, params: np, achievedRatio: derive(np).ratio, feasible, note });
   const f = (key) => (v) => derive({ ...p, [key]: v }).ratio - 1;
   if (knob === 'cordLength' || knob === 'springK') {
@@ -490,15 +525,20 @@ function solveRigid(p, knob) {
       const best = Math.abs(flo) < Math.abs(fhi) ? lo : hi;
       return out(best, { ...p }, false, `No exact 2:1 resonance for ${knob} in [${lo}, ${hi}] (ratio ${(flo + 1).toFixed(3)} .. ${(fhi + 1).toFixed(3)}).`);
     }
-    const v = bisect(f(knob), lo, hi);
+    const v = bisect_(f(knob), lo, hi);
     return out(v, { ...p, [knob]: v }, true, `Exact 2:1 resonance with this ${knob} (rigid-body model).`);
   }
   if (knob === 'nutsPerSide') {
     let best = 0, bestErr = Infinity, rMin = Infinity, rMax = -Infinity;
-    for (let n = 0; n <= 200; n++) {
+    const tryN = (n) => {
       const r = derive({ ...p, nutsPerSide: n }).ratio - 1;
       rMin = Math.min(rMin, r); rMax = Math.max(rMax, r);
       if (Math.abs(r) < bestErr) { bestErr = Math.abs(r); best = n; }
+    };
+    if (!elastic) for (let n = 0; n <= 200; n++) tryN(n);
+    else {
+      for (let n = 0; n <= 200; n += 10) tryN(n);
+      const c = best; for (let n = Math.max(0, c - 9); n <= Math.min(200, c + 9); n++) tryN(n);
     }
     const feasible = rMin <= 0 && rMax >= 0; // ratio is not monotone in n; feasible if the scan brackets 1
     if (feasible) return out(best, { ...p, nutsPerSide: best }, true, `Best integer nuts per side is ${best} (ratio error ${(bestErr * 100).toFixed(3)}%).`);
@@ -507,8 +547,83 @@ function solveRigid(p, knob) {
   return { value: NaN, params: { ...p }, achievedRatio: derive(p).ratio, feasible: false, note: `Unknown knob '${knob}'.` };
 }
 
+// Robust resonance solver for the elastic model (derive() per evaluation is expensive: count evaluations).
+function solveElastic(p, knob) {
+  let nd = 0;
+  const t0 = Date.now();
+  const rr = (v) => {
+    nd++;
+    try { const r = derive({ ...p, [knob]: v }).ratio - 1; return Number.isFinite(r) ? r : NaN; } catch (e) { return NaN; }
+  };
+  const fin = (value, feasible, note) => {
+    const np = feasible ? { ...p, [knob]: value } : { ...p };
+    return { value, params: np, achievedRatio: derive(np).ratio, feasible, note, derives: nd, ms: Date.now() - t0 };
+  };
+  const bis = (lo, hi, flo, iters) => {
+    for (let i = 0; i < iters; i++) {
+      const mid = 0.5 * (lo + hi), fm = rr(mid);
+      if (!Number.isFinite(fm)) { hi = mid; continue; }
+      if (Math.abs(fm) < 1e-10 || Math.abs(hi - lo) < 1e-12 * (1 + Math.abs(hi))) return mid;
+      if ((fm < 0) === (flo < 0)) { lo = mid; flo = fm; } else hi = mid;
+    }
+    return 0.5 * (lo + hi);
+  };
+  const fail = (msg) => fin(NaN, false, msg);
+  if (knob === 'springK' || knob === 'cordLength') {
+    // candidate bracket list: springK = geometric expansion around the current value; cordLength = grid on [0, 3] m
+    let pts;
+    if (knob === 'springK') {
+      const k = p.springK; pts = [];
+      for (const f of [1, 1.25, 1.6, 2, 3, 4, 8]) { pts.push(k / f); if (f > 1) pts.push(k * f); }
+      pts.sort((a, b) => a - b);
+    } else { pts = []; for (let c = 0; c <= 3.0001; c += 0.1) pts.push(Math.min(c, 3)); }
+    const vals = [];
+    for (const v of pts) vals.push([v, rr(v)]);
+    const ok = vals.filter((e) => Number.isFinite(e[1]));
+    if (ok.length < 2) return fail(`No finite resonance ratio for ${knob} in the search range.`);
+    // sign change closest to the current value (springK) or smallest cord (cordLength)
+    let best = null;
+    const ref = knob === 'springK' ? p.springK : 0;
+    for (let i = 0; i + 1 < ok.length; i++) {
+      if (ok[i][1] === 0) { best = [ok[i], ok[i]]; break; }
+      if ((ok[i][1] < 0) !== (ok[i + 1][1] < 0)) {
+        const dist = Math.min(Math.abs(ok[i][0] - ref), Math.abs(ok[i + 1][0] - ref));
+        if (!best || dist < best[2]) best = [ok[i], ok[i + 1], dist];
+      }
+    }
+    if (!best) return fail(`No exact 2:1 resonance for ${knob} in [${ok[0][0].toPrecision(3)}, ${ok[ok.length - 1][0].toPrecision(3)}] (ratio ${(ok[0][1] + 1).toFixed(3)} .. ${(ok[ok.length - 1][1] + 1).toFixed(3)}).`);
+    const v = best[0] === best[1] ? best[0][0] : bis(best[0][0], best[1][0], best[0][1], 45);
+    return fin(v, true, `Exact 2:1 resonance with this ${knob} (elastic model).`);
+  }
+  if (knob === 'nutsPerSide') {
+    // Physically sensible range only: each stack (6.5 mm per M8 nut) must stay a short ballast, not a
+    // second pendulum. Beyond ~30 nuts per side (a ~20 cm stack, ~170 g) the ratio can come back to 1
+    // for reasons that have nothing to do with a real setup (huge rotary inertia of the stacks).
+    const NMAX = 30;
+    const r = new Map();
+    const get = (n) => { if (!r.has(n)) r.set(n, rr(n)); return r.get(n); };
+    for (let n = 0; n <= NMAX; n += 3) get(n);
+    let br = null;
+    for (let n = 0; n < NMAX; n += 3) {
+      const a = get(n), b = get(n + 3);
+      if (Number.isFinite(a) && Number.isFinite(b) && (a < 0) !== (b < 0)) { br = n; break; }
+    }
+    if (br === null) {
+      const r0 = get(0) + 1, rN = get(NMAX) + 1;
+      return fail(`No number of nuts (0..${NMAX} per side) reaches 2:1 resonance: the ratio goes from ${r0.toFixed(4)} to ${rN.toFixed(4)}. ` +
+        (r0 < 1 && rN < r0 ? 'Adding mass moves the system further below 2:1; shorten the cord or use a stiffer spring instead.' : 'Try another knob.'));
+    }
+    let lo = br, hi = br + 3;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if ((get(m) < 0) === (get(lo) < 0)) lo = m; else hi = m; }
+    const n = Math.abs(get(lo)) <= Math.abs(get(hi)) ? lo : hi;
+    return fin(n, true, `Best integer nuts per side is ${n} (ratio error ${(Math.abs(get(n)) * 100).toFixed(3)}%).`);
+  }
+  return fail(`Unknown knob '${knob}'.`);
+}
+
 export function solveForResonance(params, knob) {
   const p = withDefaults(params);
+  if (p.model === 'elastic') return solveElastic(p, knob);
   if (p.model !== 'point') return solveRigid(p, knob);
   const dv = derive(p);
   const g = p.gravity;
@@ -539,9 +654,10 @@ export function solveForResonance(params, knob) {
   return { value: NaN, params: { ...p }, achievedRatio: dv.ratio, feasible: false, note: `Unknown knob '${knob}'.` };
 }
 
-export function simulate(params, duration, dt = 0.001, sampleEvery = 10) {
+export function simulate(params, duration, dt, sampleEvery = 10) {
   const p = withDefaults(params);
   const derived = derive(p);
+  if (dt === undefined) dt = derived.dt;
   const state = createState(p, derived);
   const samples = [observables(state, p, derived)];
   const n = Math.round(duration / dt);

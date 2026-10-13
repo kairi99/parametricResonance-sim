@@ -9,24 +9,8 @@ const TRAIL_N = 600;
 const CORD_SEG = 24;
 const HORN_R = 0.01, HORN_LEN = 0.02, WALL = 0.0026, BUMP_CLEAR = 0.002;
 const NUT_T = 0.0065, NUT_AF = 0.013, ROD_R = 0.004, EYE_R = 0.006, EYE_TUBE = 0.0016;
-const SPRING_COIL_R = 0.011, SPRING_WIRE_R = 0.001, SPRING_TURNS = 22;
-
-class HelixCurve extends THREE.Curve {
-  // Unit-length spring along +y with short straight leads on the axis.
-  constructor() { super(); this.lead = 0.025; this.ramp = 0.02; this.arcLengthDivisions = 6000; }
-  getPoint(t, target = new THREE.Vector3()) {
-    const a = this.lead, b = this.ramp;
-    const y = t;
-    let r = SPRING_COIL_R, phase = 0;
-    if (t < a) { r = 0; }
-    else if (t < a + b) { r = SPRING_COIL_R * (t - a) / b; }
-    else if (t > 1 - a) { r = 0; }
-    else if (t > 1 - a - b) { r = SPRING_COIL_R * (1 - a - t) / b; }
-    const s = Math.min(Math.max((t - a) / (1 - 2 * a), 0), 1);
-    phase = s * SPRING_TURNS * Math.PI * 2;
-    return target.set(r * Math.cos(phase), y, r * Math.sin(phase));
-  }
-}
+const SPRING_COIL_R = 0.011, SPRING_WIRE_R = 0.00041, SPRING_TURNS = 22;
+const SPRING_SIDES = 6, SPRING_PER_TURN = 40, SPRING_MAX_SAMPLES = 1500, SPRING_LEAD = 0.02, SPRING_RAMP = 0.02;
 
 export function createScene(container, options = {}) {
   const showCom = options.showCom !== false;
@@ -81,6 +65,10 @@ export function createScene(container, options = {}) {
     pla: new THREE.MeshPhysicalMaterial({ color: 0xf97316, roughness: 0.45, transparent: true, opacity: 0.75 }),
     plaSolid: new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.5 }),
     steel: new THREE.MeshStandardMaterial({ color: 0xb4bac2, metalness: 1, roughness: 0.32 }),
+    stripeF: new THREE.MeshBasicMaterial({ color: 0x22e07a }),
+    stripeB: new THREE.MeshBasicMaterial({ color: 0xff3df0 }),
+    yawW: new THREE.MeshBasicMaterial({ color: 0xf8fafc }),
+    yawO: new THREE.MeshBasicMaterial({ color: 0xff7a00 }),
     com: new THREE.MeshBasicMaterial({ color: 0xf43f5e, transparent: true, opacity: 0.85, depthTest: false }),
     eq: new THREE.MeshBasicMaterial({ color: 0x34d399, transparent: true, opacity: 0.35, depthWrite: false }),
     floor: new THREE.ShadowMaterial({ opacity: 0.35 }),
@@ -100,12 +88,138 @@ export function createScene(container, options = {}) {
     scene.add(ceiling);
   }
 
-  // ---------- spring (unit helix, built once) ----------
-  const springMesh = new THREE.Mesh(
-    new THREE.TubeGeometry(new HelixCurve(), 1400, SPRING_WIRE_R, 6, false), mat.spring);
+  // ---------- spring: one preallocated tube, updated in place every frame ----------
+  mat.spring.color.setHex(0xffffff);
+  mat.spring.vertexColors = true;
+  const springMesh = new THREE.Mesh(new THREE.BufferGeometry(), mat.spring);
   springMesh.castShadow = true;
   springMesh.frustumCulled = false;
   scene.add(springMesh);
+  let SPN = 0;                       // samples (segments) along the centreline
+  let spPos, spNor, spCol, spCl, spHp, spRd, spArc, spPh;   // per-sample scratch / attribute arrays
+  let spCoilR = SPRING_COIL_R, spWireR = 0.0006, spTurns = SPRING_TURNS;
+  let spNodes = new Float64Array(6), spPhase = new Float64Array(2), spCum = new Float64Array(2);
+  const spLastNode = [0, 0, 0];
+  function allocSpring(turns) {
+    spTurns = turns;
+    SPN = Math.min(SPRING_MAX_SAMPLES, Math.ceil(turns * SPRING_PER_TURN * 1.15) + 40);
+    const nv = (SPN + 1) * SPRING_SIDES;
+    spPos = new Float32Array(nv * 3); spNor = new Float32Array(nv * 3); spCol = new Float32Array(nv * 3);
+    spCl = new Float64Array((SPN + 1) * 3); spHp = new Float64Array((SPN + 1) * 3); spRd = new Float64Array((SPN + 1) * 3);
+    spArc = new Float64Array(SPN + 1); spPh = new Float64Array(SPN + 1);
+    const idx = new Uint32Array(SPN * SPRING_SIDES * 6);
+    let o = 0;
+    for (let k = 0; k < SPN; k++) for (let j = 0; j < SPRING_SIDES; j++) {
+      const j1 = (j + 1) % SPRING_SIDES;
+      const a = k * SPRING_SIDES + j, b = k * SPRING_SIDES + j1, c = (k + 1) * SPRING_SIDES + j, d = (k + 1) * SPRING_SIDES + j1;
+      idx[o++] = a; idx[o++] = c; idx[o++] = b; idx[o++] = b; idx[o++] = c; idx[o++] = d;
+    }
+    const g = springMesh.geometry;
+    g.dispose();
+    g.setAttribute('position', new THREE.BufferAttribute(spPos, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('normal', new THREE.BufferAttribute(spNor, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('color', new THREE.BufferAttribute(spCol, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 10);
+  }
+  allocSpring(SPRING_TURNS);
+
+  const smooth01 = x => x * x * (3 - 2 * x);
+  // Fill the spring tube from nodes (three frame, 3M) and coil phase (M).
+  function buildSpring(nd, ph, M) {
+    // centripetal Catmull-Rom (Barry-Goldman) through nodes; samples uniform in chord length
+    if (spCum.length < M) spCum = new Float64Array(M);
+    let total = 0; spCum[0] = 0;
+    for (let i = 0; i < M - 1; i++) {
+      total += Math.hypot(nd[3 * i + 3] - nd[3 * i], nd[3 * i + 4] - nd[3 * i + 1], nd[3 * i + 5] - nd[3 * i + 2]) + 1e-12;
+      spCum[i + 1] = total;
+    }
+    let seg = -1, t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+    let p0x = 0, p0y = 0, p0z = 0, p1x = 0, p1y = 0, p1z = 0, p2x = 0, p2y = 0, p2z = 0, p3x = 0, p3y = 0, p3z = 0;
+    const sq = (ax, ay, az, bx, by, bz) => Math.sqrt(Math.hypot(bx - ax, by - ay, bz - az)) + 1e-6;
+    for (let k = 0; k <= SPN; k++) {
+      const s = total * k / SPN;
+      let i = seg < 0 ? 0 : seg;
+      while (i < M - 2 && s > spCum[i + 1]) i++;
+      if (i !== seg) {
+        seg = i;
+        p1x = nd[3 * i]; p1y = nd[3 * i + 1]; p1z = nd[3 * i + 2];
+        p2x = nd[3 * i + 3]; p2y = nd[3 * i + 4]; p2z = nd[3 * i + 5];
+        if (i > 0) { p0x = nd[3 * i - 3]; p0y = nd[3 * i - 2]; p0z = nd[3 * i - 1]; }
+        else { p0x = 2 * p1x - p2x; p0y = 2 * p1y - p2y; p0z = 2 * p1z - p2z; }
+        if (i + 2 < M) { p3x = nd[3 * i + 6]; p3y = nd[3 * i + 7]; p3z = nd[3 * i + 8]; }
+        else { p3x = 2 * p2x - p1x; p3y = 2 * p2y - p1y; p3z = 2 * p2z - p1z; }
+        t0 = 0; t1 = sq(p0x, p0y, p0z, p1x, p1y, p1z); t2 = t1 + sq(p1x, p1y, p1z, p2x, p2y, p2z); t3 = t2 + sq(p2x, p2y, p2z, p3x, p3y, p3z);
+      }
+      const cs = spCum[i + 1] - spCum[i];
+      const u = Math.min(Math.max((s - spCum[i]) / cs, 0), 1);
+      const t = t1 + u * (t2 - t1);
+      const a1 = (t1 - t) / (t1 - t0), a1b = 1 - a1;
+      const a2 = (t2 - t) / (t2 - t1), a2b = 1 - a2;
+      const a3 = (t3 - t) / (t3 - t2), a3b = 1 - a3;
+      const b1 = (t2 - t) / (t2 - t0), b1b = 1 - b1;
+      const b2 = (t3 - t) / (t3 - t1), b2b = 1 - b2;
+      const A1x = a1 * p0x + a1b * p1x, A1y = a1 * p0y + a1b * p1y, A1z = a1 * p0z + a1b * p1z;
+      const A2x = a2 * p1x + a2b * p2x, A2y = a2 * p1y + a2b * p2y, A2z = a2 * p1z + a2b * p2z;
+      const A3x = a3 * p2x + a3b * p3x, A3y = a3 * p2y + a3b * p3y, A3z = a3 * p2z + a3b * p3z;
+      const B1x = b1 * A1x + b1b * A2x, B1y = b1 * A1y + b1b * A2y, B1z = b1 * A1z + b1b * A2z;
+      const B2x = b2 * A2x + b2b * A3x, B2y = b2 * A2y + b2b * A3y, B2z = b2 * A2z + b2b * A3z;
+      spCl[3 * k] = a2 * B1x + a2b * B2x; spCl[3 * k + 1] = a2 * B1y + a2b * B2y; spCl[3 * k + 2] = a2 * B1z + a2b * B2z;
+      spPh[k] = ph[i] * (1 - u) + ph[i + 1] * u;
+    }
+    // arc length
+    spArc[0] = 0;
+    for (let k = 1; k <= SPN; k++)
+      spArc[k] = spArc[k - 1] + Math.hypot(spCl[3 * k] - spCl[3 * k - 3], spCl[3 * k + 1] - spCl[3 * k - 2], spCl[3 * k + 2] - spCl[3 * k - 1]);
+    const A = spArc[SPN];
+    // parallel transport frame -> helix points + radial directions
+    let nx = 1, ny = 0, nz = 0;
+    for (let k = 0; k <= SPN; k++) {
+      const ka = Math.max(k - 1, 0), kb = Math.min(k + 1, SPN);
+      let tx = spCl[3 * kb] - spCl[3 * ka], ty = spCl[3 * kb + 1] - spCl[3 * ka + 1], tz = spCl[3 * kb + 2] - spCl[3 * ka + 2];
+      const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+      let dn = nx * tx + ny * ty + nz * tz;
+      nx -= dn * tx; ny -= dn * ty; nz -= dn * tz;
+      let nl = Math.hypot(nx, ny, nz);
+      if (nl < 1e-6) { nx = 0; ny = 0; nz = 1; dn = nz * tz; nx -= dn * tx; ny -= dn * ty; nz -= dn * tz; nl = Math.hypot(nx, ny, nz) || 1; }
+      nx /= nl; ny /= nl; nz /= nl;
+      const bx = ty * nz - tz * ny, by = tz * nx - tx * nz, bz = tx * ny - ty * nx;
+      const a = spArc[k];
+      const x1 = Math.min(Math.max((a - SPRING_LEAD) / SPRING_RAMP, 0), 1), x2 = Math.min(Math.max((A - a - SPRING_LEAD) / SPRING_RAMP, 0), 1);
+      const r = spCoilR * smooth01(Math.min(x1, x2));
+      const cp = Math.cos(spPh[k]), sp = Math.sin(spPh[k]);
+      const rx = cp * nx + sp * bx, ry = cp * ny + sp * by, rz = cp * nz + sp * bz;
+      spRd[3 * k] = rx; spRd[3 * k + 1] = ry; spRd[3 * k + 2] = rz;
+      spHp[3 * k] = spCl[3 * k] + r * rx; spHp[3 * k + 1] = spCl[3 * k + 1] + r * ry; spHp[3 * k + 2] = spCl[3 * k + 2] + r * rz;
+    }
+    // tube around the helix curve (ring frame: radial dir orthogonalised against helix tangent)
+    const w = spWireR;
+    for (let k = 0; k <= SPN; k++) {
+      const ka = Math.max(k - 1, 0), kb = Math.min(k + 1, SPN);
+      let tx = spHp[3 * kb] - spHp[3 * ka], ty = spHp[3 * kb + 1] - spHp[3 * ka + 1], tz = spHp[3 * kb + 2] - spHp[3 * ka + 2];
+      const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+      let rx = spRd[3 * k], ry = spRd[3 * k + 1], rz = spRd[3 * k + 2];
+      const dn = rx * tx + ry * ty + rz * tz;
+      rx -= dn * tx; ry -= dn * ty; rz -= dn * tz;
+      const rl = Math.hypot(rx, ry, rz) || 1; rx /= rl; ry /= rl; rz /= rl;
+      const bx = ty * rz - tz * ry, by = tz * rx - tx * rz, bz = tx * ry - ty * rx;
+      // marker paint where the coil angle passes phi = 0 (shows twist as a sideways shift of the dots)
+      const c = Math.cos(spPh[k]);
+      const m = c > 0.9 ? smooth01(Math.min((c - 0.9) / 0.07, 1)) : 0;
+      const cr = 0.84 + 0.16 * m, cg = 0.86 - 0.66 * m, cb = 0.88 - 0.68 * m;
+      for (let j = 0; j < SPRING_SIDES; j++) {
+        const th = (j / SPRING_SIDES) * 6.283185307179586, ct = Math.cos(th), st = Math.sin(th);
+        const ox = ct * rx + st * bx, oy = ct * ry + st * by, oz = ct * rz + st * bz;
+        const v = (k * SPRING_SIDES + j) * 3;
+        spPos[v] = spHp[3 * k] + w * ox; spPos[v + 1] = spHp[3 * k + 1] + w * oy; spPos[v + 2] = spHp[3 * k + 2] + w * oz;
+        spNor[v] = ox; spNor[v + 1] = oy; spNor[v + 2] = oz;
+        spCol[v] = cr; spCol[v + 1] = cg; spCol[v + 2] = cb;
+      }
+    }
+    const g = springMesh.geometry.attributes;
+    g.position.needsUpdate = true; g.normal.needsUpdate = true; g.color.needsUpdate = true;
+  }
+  const spStats = { n: 0, ms: 0 };
 
   // ---------- cord (instanced segments) ----------
   const cordGeo = new THREE.CylinderGeometry(0.0012, 0.0012, 1, 6, 1, true);
@@ -207,6 +321,12 @@ export function createScene(container, options = {}) {
     D = derived || D || {};
     built = true;
     disposeGroup(phoneParts);
+    {
+      const turns = Math.max(1, D.activeTurns ?? SPRING_TURNS);
+      spCoilR = (D.coilDiameter ?? 2 * SPRING_COIL_R) / 2;
+      spWireR = Math.max((D.wireDiameter ?? 0.00082) / 2, 0.0006);
+      if (Math.abs(turns - spTurns) > 1e-9) allocSpring(turns);
+    }
 
     const L = P.phoneLength ?? 0.15, W = P.phoneWidth ?? 0.07, T = P.phoneThickness ?? 0.008;
     const h = L / 2;
@@ -235,6 +355,13 @@ export function createScene(container, options = {}) {
       phoneParts.add(ring, lens);
     }
 
+    // twist markers: offset stripes on screen (green) and back (magenta), asymmetric so a half-turn is obvious
+    {
+      const sw = 0.007, sl = L * 0.8, sx = W * 0.22;
+      phoneParts.add(mk(new THREE.BoxGeometry(sw, sl, 0.0006), mat.stripeF, sx, 0, T / 2 + 0.0009, false));
+      phoneParts.add(mk(new THREE.BoxGeometry(sw, sl, 0.0006), mat.stripeB, sx, 0, -T / 2 - 0.0009, false));
+    }
+
     let topExtent = h, bottomExtent = h, eyeY = d;
     if (hasCase) {
       const w = WALL;
@@ -260,6 +387,12 @@ export function createScene(container, options = {}) {
       const rodLen = stack + 0.012;
       phoneParts.add(mk(new THREE.CylinderGeometry(ROD_R, ROD_R, rodLen, 16), mat.steel, 0, -(hornTip - 0.002 + rodLen / 2), 0));
       topExtent = Math.max(eyeY + EYE_R, hornTip);
+      // yaw pointer: flat bar through the attachment eye, orange arrow tip on body +x, white tip on -x
+      const pw = W / 2 + 0.035;
+      phoneParts.add(mk(new THREE.BoxGeometry(2 * pw, 0.004, 0.0025), mat.yawW, 0, eyeY - 0.012, 0, false));
+      const tip = mk(new THREE.ConeGeometry(0.008, 0.02, 12), mat.yawO, pw + 0.008, eyeY - 0.012, 0, false);
+      tip.rotation.z = -Math.PI / 2;
+      phoneParts.add(tip);
       bottomExtent = hornTip + rodLen;
       // nuts
       if (nuts > 0) {
@@ -331,16 +464,35 @@ export function createScene(container, options = {}) {
     const aLen = vB.length();
     if (aLen > 1e-9) vE.copy(vB).multiplyScalar(1 / aLen);   // spring direction: pivot -> attach
 
-    // spring
-    springMesh.position.set(0, 0, 0);
-    springMesh.scale.set(1, Math.max(springLength, 1e-3), 1);
-    springMesh.quaternion.setFromUnitVectors(Y_AXIS, vE);
+    // spring tube
+    {
+      const t0p = performance.now();
+      const fs = frame.spring;
+      let M, nd, ph;
+      if (fs && fs.nodes && fs.nodes.length >= 6) {
+        M = fs.nodes.length / 3;
+        if (spNodes.length < 3 * M) spNodes = new Float64Array(3 * M);
+        const src = fs.nodes;
+        for (let i = 0; i < M; i++) { spNodes[3 * i] = src[3 * i]; spNodes[3 * i + 1] = src[3 * i + 2]; spNodes[3 * i + 2] = -src[3 * i + 1]; }
+        nd = spNodes; ph = fs.phase;
+        if (!ph || ph.length < M) { spPhase = new Float64Array(M); for (let i = 0; i < M; i++) spPhase[i] = (i / (M - 1)) * spTurns * 6.283185307179586; ph = spPhase; }
+      } else {
+        M = 2;
+        spNodes[0] = spNodes[1] = spNodes[2] = 0;
+        spNodes[3] = vE.x * springLength; spNodes[4] = vE.y * springLength; spNodes[5] = vE.z * springLength;
+        spPhase[0] = 0; spPhase[1] = spTurns * 6.283185307179586;
+        nd = spNodes; ph = spPhase;
+      }
+      spLastNode[0] = nd[3 * M - 3]; spLastNode[1] = nd[3 * M - 2]; spLastNode[2] = nd[3 * M - 1];
+      buildSpring(nd, ph, M);
+      spStats.ms += performance.now() - t0p; spStats.n++;
+    }
 
     // cord: spring lower end -> attach
     const Lc = (frame.params?.cordLength ?? P?.cordLength ?? 0);
     if (Lc > 1e-6) {
       cordMesh.visible = true;
-      vA.copy(vE).multiplyScalar(springLength);
+      vA.set(spLastNode[0], spLastNode[1], spLastNode[2]);
       vD.subVectors(vB, vA);
       const chord = vD.length();
       let sag = 0;
@@ -548,5 +700,5 @@ export function createScene(container, options = {}) {
     if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
   }
 
-  return { update, rebuild, resize, resetCamera, setTrail, clearTrail, setShowEquilibrium, setPlacementHandlers, setPlacementEnabled, setStartMarker, dispose };
+  return { update, rebuild, resize, resetCamera, setTrail, clearTrail, setShowEquilibrium, setPlacementHandlers, setPlacementEnabled, setStartMarker, dispose, springStats: spStats };
 }
