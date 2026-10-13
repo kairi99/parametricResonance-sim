@@ -13,7 +13,12 @@ function showError(e) {
   b.textContent += (b.textContent ? '\n' : '') + (e && e.stack ? e.stack : String(e));
   console.error(e);
 }
-window.addEventListener('error', ev => showError(ev.error || ev.message));
+window.addEventListener('error', ev => {
+  // Opaque "Script error." comes from scripts the page cannot inspect (e.g. ones injected by
+  // mobile Safari/Chrome); our own same-origin modules always report a real error object.
+  if (!ev.error && /^Script error\.?$/.test(ev.message)) { console.warn('ignored opaque error', ev); return; }
+  showError(ev.error || ev.message);
+});
 window.addEventListener('unhandledrejection', ev => showError(ev.reason));
 
 // ---------- state ----------
