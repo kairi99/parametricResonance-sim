@@ -1,7 +1,7 @@
 // Elastic (spring) pendulum physics engine. Dependency-free ES module (browser + Node).
 // SI units. Pivot at origin, +Z up. q = COM position relative to pivot.
 
-import { deriveElastic, createElasticState, stepElastic, observablesElastic, unwrapYaw, phoneSensors, worldToBody } from './elastic.js';
+import { deriveElastic, createElasticState, stepElastic, observablesElastic, unwrapYaw, phoneSensors, worldToBody } from './elastic.js?v=8644c0b';
 
 export const DEFAULT_PARAMS = {
   phoneMass: 0.177,
@@ -18,7 +18,7 @@ export const DEFAULT_PARAMS = {
   springMass: 0.0063,
   cordLength: 0.0,
   gravity: 9.767,
-  dampingModel: 'linear',
+  dampingModel: 'none',
   cR: 0.0032,
   cT: 0.0024,
   dR: 0.0104,
@@ -570,14 +570,16 @@ function solveRigid(p, knob) {
       rMin = Math.min(rMin, r); rMax = Math.max(rMax, r);
       if (Math.abs(r) < bestErr) { bestErr = Math.abs(r); best = n; }
     };
-    if (!elastic) for (let n = 0; n <= 200; n++) tryN(n);
+    // ratio is not monotone in n: beyond ~30 nuts per side a second, nonphysical crossing appears (kg of ballast)
+    const NMAX = 30;
+    if (!elastic) for (let n = 0; n <= NMAX; n++) tryN(n);
     else {
-      for (let n = 0; n <= 200; n += 10) tryN(n);
-      const c = best; for (let n = Math.max(0, c - 9); n <= Math.min(200, c + 9); n++) tryN(n);
+      for (let n = 0; n <= NMAX; n += 10) tryN(n);
+      const c = best; for (let n = Math.max(0, c - 9); n <= Math.min(NMAX, c + 9); n++) tryN(n);
     }
-    const feasible = rMin <= 0 && rMax >= 0; // ratio is not monotone in n; feasible if the scan brackets 1
+    const feasible = rMin <= 0 && rMax >= 0;
     if (feasible) return out(best, { ...p, nutsPerSide: best }, true, `Best integer nuts per side is ${best} (ratio error ${(bestErr * 100).toFixed(3)}%).`);
-    return out(best, { ...p }, false, 'No number of nuts (0..200) reaches 2:1 resonance with these parameters.');
+    return out(best, { ...p }, false, `No number of nuts (0..${NMAX} per side) reaches 2:1 resonance: adding mass moves the system further below 2:1; lengthen the cord or use a stiffer spring instead.`);
   }
   return { value: NaN, params: { ...p }, achievedRatio: derive(p).ratio, feasible: false, note: `Unknown knob '${knob}'.` };
 }
@@ -646,7 +648,7 @@ function solveElastic(p, knob) {
     if (br === null) {
       const r0 = get(0) + 1, rN = get(NMAX) + 1;
       return fail(`No number of nuts (0..${NMAX} per side) reaches 2:1 resonance: the ratio goes from ${r0.toFixed(4)} to ${rN.toFixed(4)}. ` +
-        (r0 < 1 && rN < r0 ? 'Adding mass moves the system further below 2:1; shorten the cord or use a stiffer spring instead.' : 'Try another knob.'));
+        (r0 < 1 && rN < r0 ? 'Adding mass moves the system further below 2:1; lengthen the cord or use a stiffer spring instead.' : 'Try another knob.'));
     }
     let lo = br, hi = br + 3;
     while (hi - lo > 1) { const m = (lo + hi) >> 1; if ((get(m) < 0) === (get(lo) < 0)) lo = m; else hi = m; }

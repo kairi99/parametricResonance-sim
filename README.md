@@ -12,11 +12,11 @@ Plain ES modules, no build step. Three.js is loaded from jsDelivr through an imp
 
 ```sh
 cd simulator
-python3 -m http.server 8000
-# open http://localhost:8000/
+python3 tools/serve.py 8000
+# open http://localhost:8000/   (?lang=es for Spanish)
 ```
 
-(ES modules do not load from `file://`; use any static server.)
+ES modules do not load from `file://`, so a server is needed. `tools/serve.py` is a static server that disables browser caching. With plain `python3 -m http.server` the browser may keep old copies of some modules after an edit and fail with errors such as "setLabels is not a function"; if that happens, hard-reload (Ctrl+Shift+R). The server listens on all interfaces, so a phone on the same Wi-Fi can open `http://<computer-ip>:8000/`.
 
 ## Deploy to GitHub Pages
 
@@ -30,7 +30,7 @@ The site is plain static files (no build step). "Deploy from a branch" can only 
 
 ### Auto-sync (how the live site is published)
 
-The live site is option 1: the public repo `kairi99/parametricResonance-sim` holds a copy of this folder and serves it with Pages. **Edit the simulator in the private repo's `simulator/` folder only** — the workflow `.github/workflows/sync-simulator.yml` runs on every push to `main` that touches `simulator/`, runs the physics tests, and (only if they pass) mirrors the folder into the public repo, which republishes the site within about a minute. Changes made directly in the public repo are overwritten by the next sync. It can also be run by hand from the Actions tab ("Run workflow").
+The live site is option 1: the public repo `kairi99/parametricResonance-sim` holds a copy of this folder and serves it with Pages. **Edit the simulator in the private repo's `simulator/` folder only** — the workflow `.github/workflows/sync-simulator.yml` runs on every push to `main` that touches `simulator/`, runs the physics tests, and (only if they pass) mirrors the folder into the public repo, which republishes the site within about a minute. Changes made directly in the public repo are overwritten by the next sync. The published copy is stamped with `node tools/stamp-version.mjs <dir> <short-sha>`, which appends `?v=<sha>` to every module, worker, fetch and stylesheet URL so returning visitors never combine cached files from two releases (the source stays unstamped; do the same when syncing by hand). It can also be run by hand from the Actions tab ("Run workflow").
 
 One-time setup (a write deploy key on the public repo, its private half as the secret `SIM_DEPLOY_KEY` in the private repo):
 
@@ -42,6 +42,20 @@ rm -f /tmp/sim_sync_key /tmp/sim_sync_key.pub
 ```
 
 Until the secret exists the workflow skips with a notice instead of failing.
+
+## Chart ruler
+
+Click two points on the first chart or the energy chart to read the time between them (Δt, bottom right); each click snaps to the nearest crest or trough of the first series (interpolated between samples), and a third click starts over. Pause first for the easiest reading; *Chart window* (down to 2 s) zooms the time axis.
+
+"Pure bounce" starts exactly vertical, so the swing never starts by itself (an unstable equilibrium with no disturbance). "Bounce + nudge" adds the 0.5° swing seed that the energy-exchange experiments need; the nonlinear resonance search adds the same seed automatically when the start has no swing.
+
+## Guided tasks
+
+The **Learn / Aprender** button in the top bar opens a panel of guided tasks (English or Spanish; the ES/EN switch in the top bar translates the whole simulator, `?lang=es|en` sets it from a link). Each task follows **Predict, Act, Observe, Explain**: lock in a prediction (a number or one option), press *Set up the simulator* (loads the task's model, preset and start condition) and do what the task asks; the task completes by itself when the simulator reaches the target state. Then compare your prediction with the measured or expected value and write your own explanation. An optional hint can be opened while predicting or acting; the report records whether (and at which step) it was used. The student must submit their own explanation, which then locks, before the model explanation and the teacher note are shown.
+
+Progress, predictions and explanations are kept in the browser (`localStorage`, key `pr-learn-v1`); the student name is stored separately. *Download report* saves a printable HTML summary and *Reset all* clears everything. Open a task directly with `?learn=<taskId>` (or `?learn=1` for the list). On narrow screens the panel is a bottom sheet that can be closed with the x button.
+
+Code lives in `js/learn/`: `panel.js` (UI), `engine.js` (state machine and report), `probes.js` (running measurements), `i18n.js`, `tasks.js` (task definitions). The panel is loaded lazily on the first click, so nothing changes when it is never opened.
 
 ## Tests
 
@@ -102,7 +116,7 @@ The "Tuning" panel shows derived values, a resonance gauge (0.8–1.2, green ban
 | Extra mass at COM | 0 | 0–300 g |
 | Spring k / free length L0 / mass | 18.95 N/m / 19 cm / 6.3 g | 2–80 / 5–50 cm / 0–50 g |
 | Cord length | 0 | 0–60 cm |
-| Damping model | linear | none / linear / quadratic |
+| Damping model | none | none / linear / quadratic |
 | c_R, c_T | 3.2, 2.4 ×10⁻³ kg/s | 0–30 |
 | d_R, d_T | 10.4, 9.4 ×10⁻³ | 0–60 |
 | g | 9.767 m/s² | 1–25 (presets: lab, standard, Moon) |

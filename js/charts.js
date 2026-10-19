@@ -53,8 +53,15 @@ export class StripChart {
     this.ranges = [null, null];
   }
   setWindow(s) { this.windowSec = s; this.ranges = [null, null]; this.ver = (this.ver | 0) + 1; }
+  /** Language change: o = { title?, axes?: [label], names?: [series name] }; redrawn on the next drawIfDirty. */
+  setLabels(o) {
+    if (o.title !== undefined) this.title = o.title;
+    (o.axes || []).forEach((l, i) => { if (this.axes[i] && l != null) this.axes[i].label = l; });
+    (o.names || []).forEach((n, i) => { if (this.series[i] && n != null) this.series[i].name = n; });
+    this.ver = (this.ver | 0) + 1;
+  }
   setSeriesVisible(i, vis) { if (this.series[i]) { this.series[i].hidden = !vis; this.ranges = [null, null]; this.ver = (this.ver | 0) + 1; } }
-  clear() { this.head = 0; this.count = 0; this.ranges = [null, null]; this.ver = (this.ver | 0) + 1; }
+  clear() { this.head = 0; this.count = 0; this.ranges = [null, null]; this.marks = []; this.ver = (this.ver | 0) + 1; }
   drawIfDirty() { if (this.ver !== this.drawnVer) this.draw(); } // OPT-C
   push(t, values) {
     const idx = (this.head + this.count) % this.cap;
@@ -93,6 +100,7 @@ export class StripChart {
       this.ranges[a] = updateRange(this.ranges[a], lo, hi, ax.minSpan || 1e-6);
     }
     const X = t => m.l + (t - t0) / (t1 - t0) * pw;
+    this._L = { l: m.l, pw, t0, t1, start };
     ctx.font = FONT; ctx.textBaseline = 'middle';
     // title
     ctx.fillStyle = '#dbe4f5'; ctx.textAlign = 'left'; ctx.font = '600 11.5px system-ui,sans-serif';
@@ -146,7 +154,19 @@ export class StripChart {
         ctx.stroke(); ctx.setLineDash([]);
       }
     });
+    // ruler (attachRuler): markers in simulation time, Δt between the two
+    const mk = this.marks || [];
+    if (this.hoverT != null && mk.length < 2) { ctx.strokeStyle = 'rgba(226,232,240,0.35)'; ctx.beginPath(); ctx.moveTo(Math.round(X(this.hoverT)) + 0.5, m.t); ctx.lineTo(Math.round(X(this.hoverT)) + 0.5, m.t + ph); ctx.stroke(); }
+    if (mk.length === 2) { ctx.fillStyle = 'rgba(226,232,240,0.08)'; ctx.fillRect(X(Math.min(...mk)), m.t, Math.abs(X(mk[1]) - X(mk[0])), ph); }
+    ctx.strokeStyle = '#e2e8f0'; ctx.setLineDash([3, 3]);
+    for (const tm of mk) { const x = Math.round(X(tm)) + 0.5; ctx.beginPath(); ctx.moveTo(x, m.t); ctx.lineTo(x, m.t + ph); ctx.stroke(); }
+    ctx.setLineDash([]);
     ctx.restore();
+    if (mk.length) {
+      ctx.font = '600 11px system-ui,sans-serif'; ctx.fillStyle = '#e2e8f0'; ctx.textAlign = 'right';
+      const txt = mk.length === 2 ? `Δt = ${Math.abs(mk[1] - mk[0]).toFixed(3)} s` : `t₁ = ${mk[0].toFixed(3)} s`;
+      ctx.fillText(txt, m.l + pw - 4, m.t + ph - 9); ctx.font = FONT;
+    }
     // legend
     ctx.textAlign = 'left'; let lx = m.l + 6;
     this.series.forEach(s => {
@@ -158,6 +178,40 @@ export class StripChart {
   }
 }
 
+/**
+ * Click-to-measure on a StripChart canvas: click two points to read Δt; a third click starts over. Each click snaps
+ * to the nearest crest or trough (parabolic peak interpolation) of the first visible series within 12 px.
+ * getChart() returns the chart currently drawn on the canvas; onMeasure({ dt, t1, t2 }) is called for each pair.
+ */
+export function attachRuler(canvas, getChart, onMeasure) {
+  const tAt = ev => {
+    const c = getChart(), L = c._L; if (!L) return null;
+    const x = ev.clientX - canvas.getBoundingClientRect().left;
+    return x < L.l || x > L.l + L.pw ? null : L.t0 + (x - L.l) / L.pw * (L.t1 - L.t0);
+  };
+  const snap = (c, tc) => {
+    const L = c._L, si = c.series.findIndex(s => !s.hidden); if (si < 0) return tc;
+    const v = c.v[si], tol = 12 / L.pw * (L.t1 - L.t0), k = i => (c.head + i) % c.cap;
+    let best = tc, bd = tol;
+    for (let i = Math.max(L.start, 1); i < c.count - 1; i++) {
+      const a = v[k(i - 1)], b = v[k(i)], d = v[k(i + 1)], ti = c.t[k(i)];
+      if (Math.abs(ti - tc) > bd || !((b > a && b >= d) || (b < a && b <= d))) continue;
+      const den = a - 2 * b + d, h = c.t[k(i + 1)] - ti;
+      best = ti + (den ? 0.5 * (a - d) / den * h : 0); bd = Math.abs(ti - tc);
+    }
+    return best;
+  };
+  canvas.style.cursor = 'crosshair';
+  canvas.addEventListener('pointermove', ev => { const c = getChart(); c.hoverT = tAt(ev); c.ver = (c.ver | 0) + 1; });
+  canvas.addEventListener('pointerleave', () => { const c = getChart(); c.hoverT = null; c.ver = (c.ver | 0) + 1; });
+  canvas.addEventListener('click', ev => {
+    const c = getChart(), tc = tAt(ev); if (tc == null) return;
+    const mk = c.marks = (c.marks || []).length >= 2 ? [] : (c.marks || []);
+    mk.push(snap(c, tc)); c.ver = (c.ver | 0) + 1; c.draw();
+    if (mk.length === 2) onMeasure?.({ dt: Math.abs(mk[1] - mk[0]), t1: Math.min(...mk), t2: Math.max(...mk) });
+  });
+}
+
 export class XYChart {
   constructor(canvas, opts) {
     this.canvas = canvas; this.title = opts.title; this.unit = opts.unit || '';
@@ -167,6 +221,7 @@ export class XYChart {
     this.head = 0; this.count = 0; this.half = null;
   }
   setWindow(s) { this.windowSec = s; this.ver = (this.ver | 0) + 1; }
+  setLabels(o) { if (o.title !== undefined) this.title = o.title; this.ver = (this.ver | 0) + 1; }
   clear() { this.head = 0; this.count = 0; this.half = null; this.ver = (this.ver | 0) + 1; }
   drawIfDirty() { if (this.ver !== this.drawnVer) this.draw(); } // OPT-C
   push(t, x, y) {
@@ -233,7 +288,8 @@ export class XYChart {
 
 /** Scan result chart: eta (left axis, 0..1) and tExchange (right axis) vs a knob value; marks the linear estimate and the best value. */
 export class ScanChart {
-  constructor(canvas, opts = {}) { this.canvas = canvas; this.xLabel = opts.xLabel || ''; this.xScale = 1; this.xDec = 2; this.scan = []; this.linear = null; this.best = null; }
+  constructor(canvas, opts = {}) { this.canvas = canvas; this.xLabel = opts.xLabel || ''; this.xScale = 1; this.xDec = 2; this.scan = []; this.linear = null; this.best = null; this.labels = { title: 'Energy transfer η and exchange time vs knob', empty: 'no scan yet', linear: 'linear' }; }
+  setLabels(o) { Object.assign(this.labels, o); }
   setAxis(label, scale, dec) { this.xLabel = label; this.xScale = scale; this.xDec = dec; }
   set(scan, linear, best) { this.scan = (scan || []).filter(p => p && isFinite(p.value)).sort((a, b) => a.value - b.value); this.linear = linear ?? null; this.best = best ?? null; }
   clear() { this.scan = []; this.linear = null; this.best = null; }
@@ -246,10 +302,10 @@ export class ScanChart {
     if (pw < 20 || ph < 20) return;
     ctx.font = FONT; ctx.textBaseline = 'middle';
     ctx.fillStyle = '#dbe4f5'; ctx.textAlign = 'left'; ctx.font = '600 11px system-ui,sans-serif';
-    ctx.fillText('Energy transfer η and exchange time vs knob', 4, 9); ctx.font = FONT;
+    ctx.fillText(this.labels.title, 4, 9); ctx.font = FONT;
     ctx.strokeStyle = 'rgba(138,154,192,0.35)'; ctx.strokeRect(m.l + 0.5, m.t + 0.5, pw, ph);
     const pts = this.scan;
-    if (!pts.length) { ctx.fillStyle = AXIS; ctx.textAlign = 'center'; ctx.fillText('no scan yet', m.l + pw / 2, m.t + ph / 2); return; }
+    if (!pts.length) { ctx.fillStyle = AXIS; ctx.textAlign = 'center'; ctx.fillText(this.labels.empty, m.l + pw / 2, m.t + ph / 2); return; }
     let x0 = pts[0].value, x1 = pts[pts.length - 1].value;
     if (this.linear != null) { x0 = Math.min(x0, this.linear); x1 = Math.max(x1, this.linear); }
     if (x1 - x0 < 1e-12) { x0 -= 0.5; x1 += 0.5; }
@@ -272,7 +328,7 @@ export class ScanChart {
     if (this.linear != null) {
       const x = Math.round(X(this.linear)) + 0.5;
       ctx.strokeStyle = '#a78bfa'; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(x, m.t); ctx.lineTo(x, m.t + ph); ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle = '#a78bfa'; ctx.textAlign = x > w / 2 ? 'right' : 'left'; ctx.fillText('linear', x + (x > w / 2 ? -3 : 3), m.t + 8);
+      ctx.fillStyle = '#a78bfa'; ctx.textAlign = x > w / 2 ? 'right' : 'left'; ctx.fillText(this.labels.linear, x + (x > w / 2 ? -3 : 3), m.t + 8);
     }
     ctx.save(); ctx.beginPath(); ctx.rect(m.l, m.t - 4, pw, ph + 8); ctx.clip();
     const line = (Y, key, col) => {

@@ -1,4 +1,5 @@
-// Schema-driven control panel.
+// Schema-driven control panel. Texts in SCHEMA are English; t() gives the Spanish when the language is es.
+import { t } from './i18n.js?v=8644c0b';
 const D2R = Math.PI / 180;
 const R2D = 180 / Math.PI;
 const isQuad = p => p.dampingModel === 'quadratic';
@@ -39,7 +40,9 @@ export const SCHEMA = [
       { key: 'vz0', label: 'v_z0', unit: 'cm/s', scale: 100, min: -50, max: 50, step: 0.1, tip: 'Initial velocity of the phone centre, Z (up positive).' },
     ]},
     { type: 'buttons', buttons: [
-      { label: 'Pure bounce', action: 'icBounce' }, { label: 'Pure swing', action: 'icSwing' }, { label: 'Mixed', action: 'icMixed' },
+      { label: 'Pure bounce', action: 'icBounce', tip: 'Straight down along the spring: exactly vertical, no swing. Without any disturbance the swing never starts.' },
+      { label: 'Bounce + nudge', action: 'icNudge', tip: 'Pure bounce plus a 0.5° swing seed, like the small imperfections of a real release: near 2:1 the swing grows from it.' },
+      { label: 'Pure swing', action: 'icSwing' }, { label: 'Mixed', action: 'icMixed' },
       { label: 'Rocking only', action: 'icRock' }, { label: 'Sideways pull', action: 'icPull' }] },
   ]},
   { id: 'phone', title: 'Phone', open: true, controls: [
@@ -97,7 +100,7 @@ export const SCHEMA = [
   { id: 'sim', title: 'Simulation', open: true, controls: [
     { type: 'buttons', buttons: [{ label: 'Pause', action: 'togglePlay', id: 'playBtn' }, { label: 'Reset', action: 'reset' }] },
     { key: 'speed', store: 'sim', label: 'Speed', unit: '×', scale: 1, min: 0.1, max: 5, step: 0.1, tip: 'Simulated seconds per real second.' },
-    { key: 'window', store: 'sim', label: 'Chart window', unit: 's', scale: 1, min: 10, max: 120, step: 5, tip: 'Length of the scrolling chart window.' },
+    { key: 'window', store: 'sim', label: 'Chart window', unit: 's', scale: 1, min: 2, max: 120, step: 1, tip: 'Length of the scrolling chart window.' },
     { key: 'trail', store: 'sim', type: 'checkbox', label: 'Show trail', tip: 'Draw the path of the phone in 3D.' },
     { key: 'equilibrium', store: 'sim', type: 'checkbox', label: 'Show equilibrium marker', tip: 'Mark the static equilibrium position.' },
     { type: 'buttons', buttons: [{ label: 'Export CSV', action: 'exportCsv' }, { label: 'Copy share link', action: 'share' }] },
@@ -117,19 +120,19 @@ export function buildControls(container, handlers) {
   function addControls(list, body) {
     for (const c of list) {
       const row = document.createElement('div'); row.className = 'ctl';
-      if (c.tip) row.title = c.tip;
+      if (c.tip) row.title = t(c.tip);
       if (c.type === 'sub') {
         row.className = 'sub';
-        const d = document.createElement('details'); d.innerHTML = `<summary>${c.title}</summary>`;
+        const d = document.createElement('details'); d.innerHTML = `<summary>${t(c.title)}</summary>`;
         const b = document.createElement('div'); b.className = 'body'; d.appendChild(b); row.appendChild(d);
         addControls(c.controls, b);
       } else if (c.type === 'note') {
-        row.className = 'note'; row.textContent = c.text;
+        row.className = 'note'; row.textContent = t(c.text);
       } else if (c.type === 'seg') {
         row.className = 'seg';
         const btnsEl = {};
-        for (const [v, t] of c.options) {
-          const b = document.createElement('button'); b.textContent = t; b.dataset.v = v;
+        for (const [v, tt] of c.options) {
+          const b = document.createElement('button'); b.textContent = t(tt); b.dataset.v = v;
           b.addEventListener('click', () => handlers.onChange(c.store || 'params', c.key, v));
           row.appendChild(b); btnsEl[v] = b;
         }
@@ -137,30 +140,30 @@ export function buildControls(container, handlers) {
       } else if (c.type === 'buttons') {
         row.className = 'btnrow';
         for (const b of c.buttons) {
-          const btn = document.createElement('button'); btn.className = 'btn sm'; btn.textContent = b.label;
+          const btn = document.createElement('button'); btn.className = 'btn sm'; btn.textContent = t(b.label); if (b.tip) btn.title = t(b.tip);
           btn.addEventListener('click', () => handlers.actions[b.action]?.());
           if (b.id) btns[b.id] = btn;
           row.appendChild(btn);
         }
       } else if (c.type === 'box') {
-        row.className = 'dbox'; row.innerHTML = `<div class="dbox-t">${c.title}</div><div class="dbox-b mono"></div>`; boxes[c.id] = row.lastChild;
+        row.className = 'dbox'; row.innerHTML = `<div class="dbox-t">${t(c.title)}</div><div class="dbox-b mono"></div>`; boxes[c.id] = row.lastChild;
       } else if (c.type === 'info') {
-        row.className = 'info'; row.innerHTML = `<span>${c.label}</span><b>–</b>`; infos[c.id] = row.lastChild;
+        row.className = 'info'; row.innerHTML = `<span>${t(c.label)}</span><b>–</b>`; infos[c.id] = row.lastChild;
       } else if (c.type === 'checkbox') {
         row.classList.add('check');
-        row.innerHTML = `<label><input type="checkbox"> ${c.label}</label>`;
+        row.innerHTML = `<label><input type="checkbox"> ${t(c.label)}</label>`;
         const el = row.querySelector('input');
         el.addEventListener('change', () => handlers.onChange(c.store || 'params', c.key, c.bool01 ? (el.checked ? 1 : 0) : el.checked));
         ctls[c.key] = { def: c, el };
       } else if (c.type === 'select') {
-        row.innerHTML = `<div class="lab"><span>${c.label}</span></div>`;
+        row.innerHTML = `<div class="lab"><span>${t(c.label)}</span></div>`;
         const el = document.createElement('select');
-        el.innerHTML = c.options.map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+        el.innerHTML = c.options.map(([v, tt]) => `<option value="${v}">${t(tt)}</option>`).join('');
         el.addEventListener('change', () => handlers.onChange(c.store || 'params', c.key, el.value));
         row.appendChild(el); ctls[c.key] = { def: c, el };
       } else {
         const dec = decimals(c.step);
-        row.innerHTML = `<div class="lab"><span>${c.label}</span><span class="u">${c.unit}</span></div><div class="inp"><input type="range"><input type="number"></div>`;
+        row.innerHTML = `<div class="lab"><span>${t(c.label)}</span><span class="u">${c.unit}</span></div><div class="inp"><input type="range"><input type="number"></div>`;
         const range = row.querySelector('[type=range]'), num = row.querySelector('[type=number]');
         for (const el of [range, num]) { el.min = c.min; el.max = c.max; el.step = c.step; }
         const emit = v => {
@@ -181,14 +184,17 @@ export function buildControls(container, handlers) {
       if (c.key) ctls[c.key] = Object.assign(ctls[c.key] || {}, { row });
     }
   }
-  for (const g of SCHEMA) {
-    const det = document.createElement('details');
-    det.className = 'group'; det.open = !!g.open;
-    det.innerHTML = `<summary>${g.title}</summary>`;
-    const body = document.createElement('div'); body.className = 'body'; det.appendChild(body);
-    addControls(g.controls, body);
-    container.appendChild(det);
+  function build() {
+    for (const g of SCHEMA) {
+      const det = document.createElement('details');
+      det.className = 'group'; det.open = !!g.open;
+      det.innerHTML = `<summary>${t(g.title)}</summary>`;
+      const body = document.createElement('div'); body.className = 'body'; det.appendChild(body);
+      addControls(g.controls, body);
+      container.appendChild(det);
+    }
   }
+  build();
   function updateVisibility(params) { for (const { row, c } of rows) row.style.display = c.showIf(params) ? '' : 'none'; }
   return {
     refresh(params, sim, virt = {}) {
@@ -208,5 +214,22 @@ export function buildControls(container, handlers) {
     setInfo(id, text) { if (infos[id]) infos[id].textContent = text; },
     setButtonLabel(id, text) { if (btns[id]) btns[id].textContent = text; },
     updateVisibility,
+    /** Language change: rebuild the controls in place keeping which sections are open (caller then refreshes values). */
+    rebuild() {
+      const open = [...container.querySelectorAll('details')].map(d => d.open);
+      for (const o of [ctls, infos, btns, boxes]) for (const k of Object.keys(o)) delete o[k];
+      rows.length = 0; container.textContent = '';
+      build();
+      container.querySelectorAll('details').forEach((d, i) => { if (i < open.length) d.open = open[i]; });
+    },
+    /** Learn panel: open the groups holding a control, scroll to it and pulse it. Returns true if found. */
+    reveal(key) {
+      const row = ctls[key]?.row; if (!row) return false;
+      for (let d = row.closest('details'); d; d = d.parentElement?.closest('details')) d.open = true;
+      document.body.classList.remove('panel-hidden');
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      row.classList.add('learn-pulse'); setTimeout(() => row.classList.remove('learn-pulse'), 3000);
+      return true;
+    },
   };
 }

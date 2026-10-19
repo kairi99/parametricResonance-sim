@@ -5,23 +5,25 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Smartphone Elastic Pendulum — 3D Simulator</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="./css/style.css">
+<link rel="stylesheet" href="./css/style.css?v=8644c0b">
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
 } }
 </script>
-<script type="module" src="./js/main.js"></script>
+<script type="module" src="./js/main.js?v=8644c0b"></script>
 </head>
 <body>
 <header id="topbar">
-  <button id="btn-panel" class="icon-btn" title="Show / hide control panel" aria-label="Toggle control panel">☰</button>
+  <button id="btn-panel" class="icon-btn" data-tx="title aria-label" title="Show / hide control panel" aria-label="Toggle control panel">☰</button>
   <div class="titles">
-    <h1>Smartphone Elastic Pendulum — 3D Simulator</h1>
-    <p class="subtitle">Spring–swing coupling and 2:1 autoparametric resonance of a hanging phone</p>
+    <h1 data-tx="text">Smartphone Elastic Pendulum — 3D Simulator</h1>
+    <p class="subtitle" data-tx="text">Spring–swing coupling and 2:1 autoparametric resonance of a hanging phone</p>
   </div>
-  <button id="btn-help" class="icon-btn" title="About the physics" aria-label="About">?</button>
+  <div class="seg lang-seg" id="lang-seg" role="group" data-tx="aria-label" aria-label="Language"><button data-lang="es" aria-pressed="false">ES</button><button data-lang="en" aria-pressed="false">EN</button></div>
+  <button id="btn-learn" class="icon-btn learn-btn" title="Guided tasks" aria-label="Guided tasks" aria-expanded="false">Learn</button>
+  <button id="btn-help" class="icon-btn" data-tx="title aria-label" title="About the physics" aria-label="About">?</button>
 </header>
 <div id="error-banner" hidden></div>
 <div id="app">
@@ -35,24 +37,26 @@
       <div id="readout" class="mono"></div>
       <div id="vp-tools">
         <button id="vp-play" class="btn">Pause</button>
-        <button id="vp-reset" class="btn">Reset</button>
-        <button id="vp-cam" class="btn">Reset view</button>
+        <button id="vp-reset" class="btn" data-tx="text">Reset</button>
+        <button id="vp-cam" class="btn" data-tx="text">Reset view</button>
       </div>
       <div id="toast" hidden></div>
     </div>
     <div id="charts">
-      <div class="chartbox c-disp"><canvas id="ch-disp"></canvas><select id="sel-chart1" class="chart-sel" aria-label="First chart view"></select></div>
+      <div class="chartbox c-disp"><canvas id="ch-disp"></canvas><select id="sel-chart1" class="chart-sel" data-tx="aria-label" aria-label="First chart view"></select></div>
       <div class="chartbox c-energy"><canvas id="ch-energy"></canvas></div>
       <div class="chartbox c-xy"><canvas id="ch-xy"></canvas></div>
       <div class="chartbox c-diag"><canvas id="ch-diag"></canvas></div>
     </div>
   </main>
 </div>
+<aside id="learn-panel" hidden></aside>
 <dialog id="help">
-  <div class="help-head"><h2>About this simulator</h2><form method="dialog"><button class="btn">Close</button></form></div>
+  <div class="help-head"><h2 data-tx="text">About this simulator</h2><form method="dialog"><button class="btn" data-tx="text">Close</button></form></div>
   <div class="help-body">
   <p>A phone hangs from a coil spring (optionally via a cord, optionally in a case whose horns carry hex-nut ballast). It can bounce along the spring (radial mode, frequency <i>f<sub>r</sub></i>) and swing like a pendulum (frequency <i>f<sub>s</sub></i>). The two modes are nonlinearly coupled: when the spring is stretched the pendulum is longer, and swinging adds a centripetal pull on the spring.</p>
   <p>When <i>f<sub>r</sub></i> = 2 <i>f<sub>s</sub></i> the coupling is resonant (autoparametric, 2:1 resonance): energy flows back and forth between bouncing and swinging. The de Sousa parameter <i>f</i> = (<i>f<sub>s</sub></i>/<i>f<sub>r</sub></i>)² = <i>m<sub>g</sub>g</i>/(<i>k R</i><sub>eq</sub>) equals 0.25 at exact resonance.</p>
+  <p>New to the topic? The <b>Learn</b> button in the top bar opens guided tasks (predict, act, observe, explain), in English or Spanish.</p>
   <h3>Three models</h3>
   <p><b>Elastic spring (most realistic, default).</b> The phone is a rigid body hanging from a helical spring that is itself simulated: it is cut into N segments with distributed mass, and each segment carries the exact strain energy of a helical wire (stretch, bending, torsion and the extension–twist "Wilberforce" coupling). The spring sags under its own weight, twists when loaded (the phone has a static yaw), can bend and swing, and has internal longitudinal (surge) modes. Wire diameter and turn count are either solved from the spring constant and mass, or given directly.</p>
   <p><b>Rigid body.</b> The phone is a 3D rigid body; the spring is an ideal massless-core linear spring (with a lumped share of its mass) acting at the eyebolt, a frictionless ball joint. The phone can rock about the eyebolt (<i>f</i><sub>rock</sub>) and spin. Here <i>f<sub>s</sub></i> is the lower in-plane swing mode.</p>

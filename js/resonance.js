@@ -1,6 +1,6 @@
 // Nonlinear, simulation-based resonance search. Pure ES module (browser + Node); model-agnostic,
 // uses only the public physics API. See spec_v3 section 3.
-import { withDefaults, derive, createState, advance, observables, solveForResonance } from './physics.js';
+import { withDefaults, derive, createState, advance, observables, solveForResonance } from './physics.js?v=8644c0b';
 
 const SAMPLE_DT = 0.05; // 20 Hz observable sampling
 

@@ -261,7 +261,7 @@ test('R5 rigid solveForResonance', () => {
     console.log(`  [R5] ${knob} = ${r.value}`);
   }
   assert.equal(base.cordLength, DEFAULT_PARAMS.cordLength);
-  const stiff = withDefaults({ springK: 19 });
+  const stiff = withDefaults({ springK: 22 }); // above 2:1 bare, so a few nuts reach it (k = 19 only had a nonphysical ~133-nut crossing)
   const n = solveForResonance(stiff, 'nutsPerSide');
   assert.ok(n.feasible && Number.isInteger(n.value) && n.value > 0);
   assert.equal(solveForResonance(withDefaults({ springK: 60 }), 'nutsPerSide').feasible, false);

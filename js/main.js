@@ -1,9 +1,14 @@
-import { DEFAULT_PARAMS, withDefaults, derive, createState, advance, observables, solveForResonance } from './physics.js';
-import { buildControls } from './ui.js';
-import { StripChart, XYChart, ScanChart } from './charts.js';
+import { DEFAULT_PARAMS, withDefaults, derive, createState, advance, observables, solveForResonance } from './physics.js?v=8644c0b';
+import { buildControls } from './ui.js?v=8644c0b';
+import { StripChart, XYChart, ScanChart, attachRuler } from './charts.js?v=8644c0b';
+import { createProbes } from './learn/probes.js?v=8644c0b';
+import { t, getLang, setLang, onLangChange } from './i18n.js?v=8644c0b';
+import './learn/i18n.js';
+import { translateMsg } from './strings.js?v=8644c0b';
 
 const $ = id => document.getElementById(id);
 const R2D = 180 / Math.PI;
+const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
 const SAMPLE_DT = 1 / 60;       // sim-time sampling interval
 const MAX_ROWS = 200000;
 
@@ -62,7 +67,8 @@ const VIEWS = {
     series: [{ name: 'x', color: C.cyan }, { name: 'y', color: C.amber }, { name: 'z', color: C.pink }] },
 };
 const viewCharts = {};
-for (const [k, v] of Object.entries(VIEWS)) viewCharts[k] = new StripChart($('ch-disp'), { title: '', window: sim.window, axes: v.axes, series: v.series });
+const clone = o => ({ ...o, axes: o.axes.map(a => ({ ...a })), series: o.series.map(s => ({ ...s })) });   // charts get copies: relabelling must not touch the English source
+for (const [k, v] of Object.entries(VIEWS)) viewCharts[k] = new StripChart($('ch-disp'), clone({ title: '', window: sim.window, axes: v.axes, series: v.series }));
 let view1 = new URLSearchParams(location.search).get('chart1');
 if (!(view1 in VIEWS)) view1 = 'disp';
 let chDisp = viewCharts[view1];
@@ -75,64 +81,86 @@ const chDiag = new StripChart($('ch-diag'), { title: 'Resonance diagnostics', wi
   series: [{ name: 'Δφ', color: C.green, axis: 0, dots: true }, { name: 'amp_r', color: C.cyan, axis: 1 }, { name: 'amp_s·R', color: C.amber, axis: 1 }] });
 const allCharts = [...Object.values(viewCharts), chEnergy, chXY, chDiag];
 const sel1 = $('sel-chart1');
-sel1.innerHTML = Object.entries(VIEWS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('');
-sel1.value = view1;
-sel1.addEventListener('change', () => { view1 = sel1.value; chDisp = viewCharts[view1]; chDisp.ranges = [null, null]; drawCharts(); });
+function fillChartSel() { sel1.innerHTML = Object.entries(VIEWS).map(([k, v]) => `<option value="${k}">${t(v.label)}</option>`).join(''); sel1.value = view1; }
+fillChartSel();
+const RULER_TIP = 'Click two points to measure the time between them (snaps to crests and troughs); a third click starts over.';
+function labelCharts() {
+  const rl = isRigidLike(params.model), el = params.model === 'elastic';
+  for (const [k, v] of Object.entries(VIEWS)) viewCharts[k].setLabels({ axes: v.axes.map(a => t(a.label)), names: v.series.map(s => t(s.name)) });
+  viewCharts.disp.setLabels({ axes: [null, t(rl ? 'α, β, γ, ψ (deg)' : 'α, β (deg)')] });
+  chEnergy.setLabels({ title: t('Energy exchange'), axes: [t('E (mJ)')], names: [null, null, t(el ? 'E_c (+ spring internal)' : 'E_c')] });
+  chXY.setLabels({ title: t('Footprint (top view)') });
+  chDiag.setLabels({ title: t('Resonance diagnostics'), axes: [t('Δφ (rad)'), t('amplitude (cm)')] });
+  chScan.setLabels({ title: t('Energy transfer η and exchange time vs knob'), empty: t('no scan yet'), linear: t('linear') });
+  $('ch-disp').title = $('ch-energy').title = t(RULER_TIP);
+}
+function setChart1(v) { if (!(v in VIEWS)) return; sel1.value = v; view1 = v; chDisp = viewCharts[v]; chDisp.ranges = [null, null]; drawCharts(); }
+sel1.addEventListener('change', () => { setChart1(sel1.value); emit({ type: 'chartView', view: view1 }); });
+// click-to-measure Δt on the first chart and the energy chart (guided tasks read the 'ruler' event)
+attachRuler($('ch-disp'), () => chDisp, m => emit({ type: 'ruler', chart: view1, ...m }));
+attachRuler($('ch-energy'), () => chEnergy, m => emit({ type: 'ruler', chart: 'energy', ...m }));
+
+// ---------- learn events + probes (guided tasks read these; cheap when the panel is never opened) ----------
+const probes = createProbes();
+const learnEvents = [];
+function emit(e) { learnEvents.push({ ...e, t: Date.now() }); if (learnEvents.length > 50) learnEvents.shift(); }
+const numsOf = o => Object.fromEntries(Object.entries(o).filter(([, v]) => typeof v === 'number' || typeof v === 'string'));
+const probeMeta = () => ({ params: { ...params }, derived: numsOf(derived), model: params.model });
 
 // ---------- toast ----------
 let toastTimer = null;
 function toast(msg, warn = false) {
-  const t = $('toast'); t.textContent = msg; t.className = warn ? 'warn' : ''; t.hidden = false;
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 5000);
+  const el = $('toast'); el.textContent = msg; el.className = warn ? 'warn' : ''; el.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 5000);
 }
 
 // ---------- tuning panel ----------
 const tuning = $('tuning');
 tuning.innerHTML = `
-  <h3>Tuning</h3>
+  <h3 data-tx="text">Tuning</h3>
   <div class="seg model-seg" id="model-seg">
-    <button data-model="elastic" title="Elastic spring (most realistic)">Elastic spring</button><button data-model="rigid">Rigid body</button><button data-model="point">Point mass</button>
+    <button data-model="elastic" data-tx="text title" title="Elastic spring (most realistic)">Elastic spring</button><button data-model="rigid" data-tx="text">Rigid body</button><button data-model="point" data-tx="text">Point mass</button>
   </div>
   <p class="model-note" id="model-note"></p>
-  <select id="preset" class="sel" title="Load a preset configuration">
-    <option value="bare">iPhone 17, bare (default)</option>
-    <option value="lab">Lab dataset (detuned, ratio ≈ 0.92)</option>
-    <option value="case">iPhone 17 + case at exact 2:1</option>
-    <option value="custom" disabled>Custom</option>
+  <select id="preset" class="sel" data-tx="title" title="Load a preset configuration">
+    <option value="bare" data-tx="text">iPhone 17, bare (default)</option>
+    <option value="lab" data-tx="text">Lab dataset (detuned, ratio ≈ 0.92)</option>
+    <option value="case" data-tx="text">iPhone 17 + case at exact 2:1</option>
+    <option value="custom" data-tx="text" disabled>Custom</option>
   </select>
-  <div id="t-compute" hidden><span class="spin"></span>computing spring model…</div>
+  <div id="t-compute" hidden><span class="spin"></span><span id="t-compute-txt"></span></div>
   <div class="tgrid" style="margin-top:8px">
     <div>M <b id="t-M"></b></div><div>d <b id="t-d"></b></div>
-    <div>R_eq <b id="t-Req"></b></div><div>stretch <b id="t-st"></b></div>
-    <div>f_r <b id="t-fr"></b></div><div>f_s (swing) <b id="t-fs"></b></div>
+    <div>R_eq <b id="t-Req"></b></div><div><span data-tx="text">stretch</span> <b id="t-st"></b></div>
+    <div>f_r <b id="t-fr"></b></div><div><span data-tx="text">f_s (swing)</span> <b id="t-fs"></b></div>
     <div>f_r/2f_s <b id="t-ratio"></b></div><div>de Sousa f <b id="t-f"></b></div>
-    <div style="grid-column:span 2">detuning <b id="t-det"></b></div>
-    <div class="rigid-only sec">f_rock <b id="t-fs2"></b></div><div class="rigid-only sec">f_y lo/up <b id="t-fsy"></b></div>
-    <div class="el-only sec">f_twist <b id="t-ftw"></b></div><div class="el-only sec">f_surge <b id="t-fsu"></b></div>
-    <div class="el-only sec">f_r textbook <b id="t-frtb"></b></div><div class="el-only sec">yaw_eq <b id="t-yaw"></b></div>
+    <div style="grid-column:span 2"><span data-tx="text">detuning</span> <b id="t-det"></b></div>
+    <div class="rigid-only sec"><span data-tx="text">f_rock</span> <b id="t-fs2"></b></div><div class="rigid-only sec"><span data-tx="text">f_y lo/up</span> <b id="t-fsy"></b></div>
+    <div class="el-only sec"><span data-tx="text">f_twist</span> <b id="t-ftw"></b></div><div class="el-only sec"><span data-tx="text">f_surge</span> <b id="t-fsu"></b></div>
+    <div class="el-only sec"><span data-tx="text">f_r textbook</span> <b id="t-frtb"></b></div><div class="el-only sec"><span data-tx="text">yaw_eq</span> <b id="t-yaw"></b></div>
   </div>
   <div class="rigid-only inertia" id="t-inertia"></div>
   <div class="gauge"><div class="band" style="left:47.5%;width:5%"></div><div class="mid"></div><div class="mark" id="g-mark"></div></div>
   <div class="glab"><span>0.80</span><span>0.90</span><span>1.00</span><span>1.10</span><span>1.20</span></div>
   <div class="btnrow">
-    <button class="btn sm accent" data-knob="cordLength">Tune to 2:1 with cord</button>
-    <button class="btn sm accent" data-knob="nutsPerSide">…with nuts</button>
-    <button class="btn sm accent" data-knob="springK">…with spring k</button>
+    <button class="btn sm accent" data-tx="text" data-knob="cordLength">Tune to 2:1 with cord</button>
+    <button class="btn sm accent" data-tx="text" data-knob="nutsPerSide">…with nuts</button>
+    <button class="btn sm accent" data-tx="text" data-knob="springK">…with spring k</button>
   </div>
   <ul class="warns" id="warns"></ul>`;
 const resonance = $('resonance');
 resonance.innerHTML = `
-  <summary>Find the real resonance (nonlinear simulation)</summary>
-  <div class="row2"><label for="rs-knob">Knob</label>
-    <select id="rs-knob"><option value="cordLength">Cord length</option><option value="nutsPerSide">Nuts per side</option><option value="springK">Spring constant k</option></select></div>
-  <div class="row2"><label for="rs-T">Simulation length</label><input type="number" id="rs-T" min="10" max="300" step="5" value="90"><span style="color:var(--dim)">s per run</span></div>
-  <div class="btnrow"><button class="btn sm accent" id="rs-go">Search</button><button class="btn sm" id="rs-cancel" disabled>Cancel</button><button class="btn sm" id="rs-apply" disabled>Apply</button></div>
+  <summary data-tx="text">Find the real resonance (nonlinear simulation)</summary>
+  <div class="row2"><label for="rs-knob" data-tx="text">Knob</label>
+    <select id="rs-knob"><option value="cordLength" data-tx="text">Cord length</option><option value="nutsPerSide" data-tx="text">Nuts per side</option><option value="springK" data-tx="text">Spring constant k</option></select></div>
+  <div class="row2"><label for="rs-T" data-tx="text">Simulation length</label><input type="number" id="rs-T" min="10" max="300" step="5" value="90"><span style="color:var(--dim)" data-tx="text">s per run</span></div>
+  <div class="btnrow"><button class="btn sm accent" id="rs-go" data-tx="text">Search</button><button class="btn sm" id="rs-cancel" data-tx="text" disabled>Cancel</button><button class="btn sm" id="rs-apply" data-tx="text" disabled>Apply</button></div>
   <div class="progress"><i id="rs-prog"></i></div>
   <div id="scan-box"><canvas id="ch-scan"></canvas></div>
-  <div class="res-out" id="rs-out">Runs the full nonlinear model from the current start condition for each knob value and picks the fastest complete energy exchange.</div>
-  <div class="btnrow"><button class="btn sm" id="nl-go">Measure nonlinear frequencies at this start amplitude</button></div>
+  <div class="res-out" id="rs-out"></div>
+  <div class="btnrow"><button class="btn sm" id="nl-go" data-tx="text">Measure nonlinear frequencies at this start amplitude</button></div>
   <div class="res-out" id="nl-out"></div>
-  <p class="res-why">Why it differs from f_r = 2 f_s: that condition holds only for infinitesimal amplitudes; at the real start amplitude the spring stiffens or softens, the pendulum period depends on swing angle, and the coupling is nonlinear, so the frequencies shift and the best-tuned knob value moves.</p>`;
+  <p class="res-why" data-tx="text">Why it differs from f_r = 2 f_s: that condition holds only for infinitesimal amplitudes; at the real start amplitude the spring stiffens or softens, the pendulum period depends on swing angle, and the coupling is nonlinear, so the frequencies shift and the best-tuned knob value moves.</p>`;
 const chScan = new ScanChart($('ch-scan'));
 if ([...new URLSearchParams(location.search).keys()].some(k => k in DEFAULT_PARAMS)) $('preset').value = 'custom';
 const fmt = (v, d) => (typeof v === 'number' && isFinite(v)) ? v.toFixed(d) : '–';
@@ -154,16 +182,16 @@ function updateTuning() {
   $('t-frtb').textContent = fmt(d.fRTextbook, 4) + ' Hz';
   $('t-yaw').textContent = fmt((d.yawEq || 0) * R2D, 2) + '°';
   const I = d.inertia || [];
-  $('t-inertia').textContent = 'Inertia [Ix, Iy, Iz] = [' + I.map(v => fmt(v * 1e7, 0)).join(', ') + '] g·cm²';
+  $('t-inertia').textContent = t('Inertia') + ' [Ix, Iy, Iz] = [' + I.map(v => fmt(v * 1e7, 0)).join(', ') + '] g·cm²';
   $('t-ratio').textContent = fmt(d.ratio, 4);
   $('t-f').textContent = fmt(d.fDeSousa ?? d.fS / d.fR, 4);
   $('t-det').textContent = fmt(d.detuningPct ?? (d.ratio - 1) * 100, 2) + ' %';
   const pos = Math.min(1, Math.max(0, (d.ratio - 0.8) / 0.4)) * 100;
   const mk = $('g-mark'); mk.style.left = pos + '%'; mk.classList.toggle('ok', Math.abs(d.ratio - 1) <= 0.01);
-  $('warns').innerHTML = (d.warnings || []).map(w => `<li>${String(w).replace(/</g, '&lt;')}</li>`).join('');
+  $('warns').innerHTML = (d.warnings || []).map(w => `<li>${esc(translateMsg(w))}</li>`).join('');
   ui.setInfo('M', fmt(d.M * 1000, 1) + ' g');
   if (el) {
-    const r = (k, v) => `<div class="r"><span>${k}</span><b>${v}</b></div>`;
+    const r = (k, v) => `<div class="r"><span>${t(k)}</span><b>${v}</b></div>`;
     ui.setBox('springBox', [
       r('wire Ø', fmt(d.wireDiameter * 1e3, 3) + ' mm'), r('active turns', fmt(d.activeTurns, 2)),
       r('helix angle α0', fmt(d.helixAngle0 * R2D, 2) + '°'), r('wire length', fmt(d.wireLength * 100, 1) + ' cm'),
@@ -184,14 +212,14 @@ const MODEL_NOTE = {
 function syncModel() {
   const m = params.model, rl = isRigidLike(m), el = m === 'elastic';
   tuning.querySelectorAll('#model-seg button').forEach(b => b.classList.toggle('on', b.dataset.model === m));
-  $('model-note').textContent = MODEL_NOTE[m] || '';
+  $('model-note').textContent = t(MODEL_NOTE[m] || '');
   viewCharts.disp.setSeriesVisible(3, rl); viewCharts.disp.setSeriesVisible(4, rl); chEnergy.setSeriesVisible(3, rl); chEnergy.setSeriesVisible(5, el);
-  viewCharts.disp.axes[1].label = rl ? 'α, β, γ, ψ (deg)' : 'α, β (deg)';
-  chEnergy.series[2].name = el ? 'E_c (+ spring internal)' : 'E_c';
+  labelCharts();
 }
 tuning.querySelectorAll('#model-seg button').forEach(b => b.addEventListener('click', () => {
   if (params.model === b.dataset.model) return;
   setParams({ model: b.dataset.model }); resetSearchUI(); refreshUI(); restart();
+  emit({ type: 'model', model: params.model });
 }));
 const virt = () => ({
   caseEnabled: params.caseMass > 0 || params.attachmentOffset > 0,
@@ -206,11 +234,12 @@ const IC_BASE = { icMode: 'polar', x0: 0, alpha0: 0, beta0: 0, dX0: 0, dY0: 0, d
 function applyIC(patch) { setParams({ ...IC_BASE, ...patch }); refreshUI(); restart(); }
 const actions = {
   resetPhone() { setParams(IPHONE); refreshUI(); restart(); },
-  icBounce() { applyIC({ x0: 0.04, alpha0: 0.5 * D2R }); },
+  icBounce() { applyIC({ x0: 0.04 }); },
+  icNudge() { applyIC({ x0: 0.04, alpha0: 0.5 * D2R }); },
   icSwing() { applyIC({ alpha0: 10 * D2R }); },
   icMixed() { applyIC({ x0: 0.03, alpha0: 5 * D2R, beta0: 1 * D2R }); },
   icRock() {
-    if (!isRigidLike(params.model)) { setParams({ model: 'elastic' }); toast('Rocking needs a rigid-body phone — switched to the elastic model.'); }
+    if (!isRigidLike(params.model)) { setParams({ model: 'elastic' }); toast(t('Rocking needs a rigid-body phone — switched to the elastic model.')); }
     applyIC({ alignPhone: 0, tiltX0: 8 * D2R });
   },
   icPull() { applyIC({ icMode: 'cartesian', dX0: 0.08 }); },
@@ -221,6 +250,7 @@ const actions = {
 const ui = buildControls($('controls'), {
   actions,
   onChange(store, key, value) {
+    emit({ type: 'param', key, value });
     if (store === 'sim') {
       sim[key] = value;
       if (key === 'window') allCharts.forEach(c => c.setWindow(value));
@@ -247,8 +277,8 @@ const ui = buildControls($('controls'), {
   },
 });
 function syncPlayLabels() {
-  const t = sim.playing ? 'Pause' : 'Play';
-  ui.setButtonLabel('playBtn', t); $('vp-play').textContent = t;
+  const lab = t(sim.playing ? 'Pause' : 'Play');
+  ui.setButtonLabel('playBtn', lab); $('vp-play').textContent = lab;
 }
 
 // ---------- web workers (resonance search, linear tuning for the elastic model) ----------
@@ -257,7 +287,7 @@ const workers = {};   // name -> { w, pending: Map(id -> {resolve,reject,onProgr
 let nextId = 1;
 function getWorker(name) {
   if (workers[name]) return workers[name];
-  const w = new Worker(new URL('./resonance-worker.js', import.meta.url), { type: 'module' });
+  const w = new Worker(new URL('./resonance-worker.js?v=8644c0b', import.meta.url), { type: 'module' });
   const rec = { w, pending: new Map() };
   w.onmessage = ev => {
     const m = ev.data, pnd = rec.pending.get(m.id); if (!pnd) return;
@@ -289,11 +319,11 @@ function setTuneBusy(b) {
   tuning.querySelectorAll('[data-knob]').forEach(x => { x.disabled = b; });
   $('preset').disabled = b;
   $('t-compute').hidden = !b && !computingDerive;
-  $('t-compute').lastChild.textContent = b ? 'solving 2:1 resonance…' : 'computing spring model…';
+  syncCompute();
 }
+function syncCompute() { $('t-compute-txt').textContent = t(tuneBusy ? 'solving 2:1 resonance…' : 'computing spring model…'); }
 
-$('preset').addEventListener('change', async e => {
-  const v = e.target.value;
+async function applyPreset(v) {
   const model = params.model;
   resetSearchUI();
   if (v === 'bare') params = withDefaults({ model });
@@ -304,19 +334,21 @@ $('preset').addEventListener('change', async e => {
     try {
       const r = await solveLinear(p, 'cordLength');
       params = r.feasible ? withDefaults(r.params) : p;
-      toast(r.note || 'Tuned with cord length', !r.feasible);
+      toast(r.note ? translateMsg(r.note) : t('Tuned with cord length'), !r.feasible);
     } catch (err) { showError(err); params = p; }
     setTuneBusy(false);
   }
   refreshUI(); restart();
-});
+}
+$('preset').addEventListener('change', async e => { const v = e.target.value; await applyPreset(v); emit({ type: 'preset', value: v }); });
 tuning.querySelectorAll('[data-knob]').forEach(b => b.addEventListener('click', async () => {
   if (tuneBusy) return;
   setTuneBusy(true);
   try {
     const r = await solveLinear(params, b.dataset.knob);
-    if (r.feasible) { params = withDefaults(r.params); $('preset').value = 'custom'; resetSearchUI(); refreshUI(); restart(); toast(r.note || `Tuned: ratio ${fmt(r.achievedRatio, 4)}`); }
-    else toast(r.note || 'No feasible solution with this knob.', true);
+    emit({ type: 'tuned', knob: b.dataset.knob, feasible: !!r.feasible });
+    if (r.feasible) { params = withDefaults(r.params); $('preset').value = 'custom'; resetSearchUI(); refreshUI(); restart(); toast(r.note ? translateMsg(r.note) : t('Tuned: ratio {r}', { r: fmt(r.achievedRatio, 4) })); }
+    else toast(r.note ? translateMsg(r.note) : t('No feasible solution with this knob.'), true);
   } catch (e) { showError(e); }
   setTuneBusy(false);
 }));
@@ -325,21 +357,34 @@ tuning.querySelectorAll('[data-knob]').forEach(b => b.addEventListener('click', 
 const KNOB = { cordLength: { label: 'cord length (cm)', scale: 100, dec: 1, unit: 'cm' }, nutsPerSide: { label: 'nuts per side', scale: 1, dec: 0, unit: '' }, springK: { label: 'spring k (N/m)', scale: 1, dec: 2, unit: 'N/m' } };
 let search = null, searchResult = null, nlTask = null;
 function knobFmt(knob, v) { const k = KNOB[knob]; return (v * k.scale).toFixed(k.dec) + (k.unit ? ' ' + k.unit : ''); }
-function setScanAxis() { const k = KNOB[$('rs-knob').value]; chScan.setAxis(k.label, k.scale, k.dec); }
+function setScanAxis() { const k = KNOB[$('rs-knob').value]; chScan.setAxis(t(k.label), k.scale, k.dec); }
+// result panels are stored as render functions so they can be redrawn when the language changes
+let rsFn = null, nlFn = null;
+const showRs = fn => { rsFn = fn; $('rs-out').innerHTML = fn(); };
+const showNl = fn => { nlFn = fn; $('nl-out').innerHTML = fn(); };
+const rsText = key => () => esc(t(key));
 function resetSearchUI() {
   search?.cancel(); search = null; searchResult = null;
   chScan.clear(); setScanAxis(); chScan.draw();
   $('rs-prog').style.width = '0'; $('rs-go').disabled = false; $('rs-cancel').disabled = true; $('rs-apply').disabled = true;
-  $('rs-out').textContent = 'Runs the full nonlinear model from the current start condition for each knob value and picks the fastest complete energy exchange.';
+  showRs(rsText('Runs the full nonlinear model from the current start condition for each knob value and picks the fastest complete energy exchange.'));
 }
 $('rs-knob').addEventListener('change', () => { if (!search) resetSearchUI(); });
+// A start with no swing at all (e.g. "Pure bounce") is an exact equilibrium of the swing: it would never exchange
+// energy, so the search uses the same start plus the 0.5° seed of "Bounce + nudge" and says so.
+const SEED_NOTE = 'The start has no swing, so the search adds a 0.5° swing seed (as "Bounce + nudge").';
+function seeded(p) {
+  const still = p.icMode === 'cartesian' ? !p.dX0 && !p.dY0 : !p.alpha0 && !p.beta0;
+  return still && !p.vx0 && !p.vy0 ? { p: { ...p, icMode: 'polar', x0: p.icMode === 'cartesian' ? p.dZ0 : p.x0, alpha0: 0.5 * D2R, beta0: 0 }, seed: true } : { p, seed: false };
+}
 $('rs-go').addEventListener('click', async () => {
   if (search) return;
   const knob = $('rs-knob').value, T = Math.min(300, Math.max(10, parseFloat($('rs-T').value) || 90));
   searchResult = null; chScan.clear(); setScanAxis();
   $('rs-go').disabled = true; $('rs-cancel').disabled = false; $('rs-apply').disabled = true;
-  $('rs-out').innerHTML = '<span class="spin"></span>searching…';
-  const my = search = runTask('search', 'search', params, knob, { T }, (fr, partial) => {
+  showRs(() => `<span class="spin"></span>${esc(t('searching…'))}`);
+  const sp = seeded(params);
+  const my = search = runTask('search', 'search', sp.p, knob, { T }, (fr, partial) => {
     $('rs-prog').style.width = (fr * 100).toFixed(0) + '%';
     if (partial) { chScan.set(Array.isArray(partial) ? partial : partial.scan, null, null); chScan.draw(); }
   });
@@ -349,30 +394,34 @@ $('rs-go').addEventListener('click', async () => {
     $('rs-prog').style.width = '100%';
     const b = r.best;
     if (b && isFinite(b.value)) {
-      $('rs-out').innerHTML = `Best ${KNOB[knob].label.replace(/ \(.*/, '')}: <b>${knobFmt(knob, b.value)}</b> (linear estimate ${r.linear ? knobFmt(knob, r.linear.value) : '–'})<br>
-        η = <b>${fmt(b.eta, 3)}</b>, exchange time <b>${fmt(b.tExchange, 1)} s</b><br>
-        ratio f_r/2f_s: linear <b>${fmt(b.ratioLinear, 4)}</b>, measured <b>${fmt(b.ratioMeas, 4)}</b>${r.note ? '<br>' + String(r.note).replace(/</g, '&lt;') : ''}`;
+      showRs(() => `${esc(t('Best {name}', { name: t(KNOB[knob].label.replace(/ \(.*/, '')) }))}: <b>${knobFmt(knob, b.value)}</b> (${esc(t('linear estimate'))} ${r.linear ? knobFmt(knob, r.linear.value) : '–'})<br>
+        η = <b>${fmt(b.eta, 3)}</b>, ${esc(t('exchange time'))} <b>${fmt(b.tExchange, 1)} s</b><br>
+        ${esc(t('ratio f_r/2f_s: linear'))} <b>${fmt(b.ratioLinear, 4)}</b>, ${esc(t('measured'))} <b>${fmt(b.ratioMeas, 4)}</b>${r.note ? '<br>' + esc(translateMsg(r.note)) : ''}${sp.seed ? '<br>' + esc(t(SEED_NOTE)) : ''}`);
       $('rs-apply').disabled = false;
-    } else $('rs-out').textContent = my.cancelled ? 'Search cancelled.' : (r.note || 'No result.');
-  } catch (e) { if (e.message !== 'cancelled') { showError(e); $('rs-out').textContent = 'Search failed: ' + e.message; } else $('rs-out').textContent = 'Search cancelled.'; }
+      emit({ type: 'searchDone', knob, best: b });
+    } else showRs(() => esc(my.cancelled ? t('Search cancelled.') : r.note ? translateMsg(r.note) : t('No result.')));
+  } catch (e) { if (e.message !== 'cancelled') { showError(e); showRs(() => esc(t('Search failed: ') + e.message)); } else showRs(rsText('Search cancelled.')); }
   if (search === my) search = null;
   $('rs-go').disabled = false; $('rs-cancel').disabled = true;
 });
-$('rs-cancel').addEventListener('click', () => { if (search) search.cancelled = true; search?.cancel(); $('rs-out').textContent = 'Cancelling…'; });
+$('rs-cancel').addEventListener('click', () => { if (search) search.cancelled = true; search?.cancel(); showRs(rsText('Cancelling…')); });
 $('rs-apply').addEventListener('click', () => {
   if (!searchResult?.best) return;
   const { knob, best } = searchResult;
   setParams({ [knob]: best.value }); $('preset').value = 'custom'; refreshUI(); restart();
-  toast(`Applied ${knob} = ${knobFmt(knob, best.value)}`);
+  toast(t('Applied {knob} = {v}', { knob: t(knob === 'cordLength' ? 'cord length' : knob === 'nutsPerSide' ? 'nuts per side' : 'spring k'), v: knobFmt(knob, best.value) }));
 });
 $('nl-go').addEventListener('click', async () => {
   if (nlTask) return;
-  $('nl-go').disabled = true; $('nl-out').innerHTML = '<span class="spin"></span>measuring…';
-  const my = nlTask = runTask('search', 'nlfreq', params, null, { T: 60 }, null);
+  $('nl-go').disabled = true; showNl(() => `<span class="spin"></span>${esc(t('measuring…'))}`);
+  const sp = seeded(params);
+  const my = nlTask = runTask('search', 'nlfreq', sp.p, null, { T: 60 }, null);
   try {
     const r = await my.promise, d = derived;
-    $('nl-out').innerHTML = `f_r: <b>${fmt(r.fR, 4)}</b> Hz (linear ${fmt(d.fR, 4)})<br>f_s: <b>${fmt(r.fS, 4)}</b> Hz (linear ${fmt(d.fS, 4)})<br>f_r/2f_s: <b>${fmt(r.ratio, 4)}</b> (linear ${fmt(d.ratio, 4)})`;
-  } catch (e) { $('nl-out').textContent = 'Failed: ' + e.message; showError(e); }
+    emit({ type: 'nlfreqDone', fR: r.fR, fS: r.fS, ratio: r.ratio });
+    const lin = esc(t('linear')), dR = fmt(d.fR, 4), dS = fmt(d.fS, 4), dQ = fmt(d.ratio, 4);
+    showNl(() => `f_r: <b>${fmt(r.fR, 4)}</b> Hz (${lin} ${dR})<br>f_s: <b>${fmt(r.fS, 4)}</b> Hz (${lin} ${dS})<br>f_r/2f_s: <b>${fmt(r.ratio, 4)}</b> (${lin} ${dQ})${sp.seed ? '<br>' + esc(t(SEED_NOTE)) : ''}`);
+  } catch (e) { showNl(() => esc(t('Failed: ') + e.message)); showError(e); }
   nlTask = null; $('nl-go').disabled = false;
 });
 
@@ -382,7 +431,7 @@ function exportCsv() {
   const blob = new Blob([head + rows.map(r => r.join(',')).join('\n') + '\n'], { type: 'text/csv' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'elastic_pendulum.csv';
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  toast(`Exported ${rows.length} rows`);
+  toast(t('Exported {n} rows', { n: rows.length }));
 }
 function share() {
   const q = new URLSearchParams();
@@ -390,7 +439,7 @@ function share() {
   q.set('chart1', view1);
   const url = location.origin + location.pathname + '?' + q.toString();
   history.replaceState(null, '', '?' + q.toString());
-  (navigator.clipboard?.writeText(url) ?? Promise.reject()).then(() => toast('Share link copied'), () => toast('Link set in the address bar: ' + url));
+  (navigator.clipboard?.writeText(url) ?? Promise.reject()).then(() => toast(t('Share link copied')), () => toast(t('Link set in the address bar: {url}', { url })));
 }
 
 // ---------- restart ----------
@@ -404,6 +453,7 @@ function scheduleRestart() {
 function sample() {
   obs = observables(state, params, derived);
   const o = obs;
+  probes.push(o);
   viewCharts.disp.push(o.t, [o.x * 100, o.alpha * R2D, o.beta * R2D, (o.tilt || 0) * R2D, (o.yaw || 0) * R2D]);
   viewCharts.acc.push(o.t, o.acc); viewCharts.sensor.push(o.t, o.accSensor); viewCharts.gyro.push(o.t, o.gyroSensor);
   chEnergy.push(o.t, [o.Er * 1e3, o.Es * 1e3, o.Ec * 1e3, (o.Erot || 0) * 1e3, o.Erel * 1e3, (o.EspringKin || 0) * 1e3]);
@@ -417,9 +467,11 @@ function restart() {
     derived = derive(params); computingDerive = false; if (!tuneBusy) $('t-compute').hidden = true;
     scene?.rebuild(params, derived);
     state = createState(params, derived);
+    probes.reset(probeMeta());
     allCharts.forEach(c => c.clear()); scene?.clearTrail();
     rows = []; sampleAcc = 0;
     sample();
+    emit({ type: 'restart' });
     updateTuning();
     if (scene?.setStartMarker) scene.setStartMarker(obs.q);
     pushScene(); updateReadout(); drawCharts();
@@ -435,6 +487,7 @@ function placeAt(q) {
 }
 function reinitLight() {
   state = createState(params, derived);
+  probes.reset(probeMeta());
   allCharts.forEach(c => c.clear()); scene?.clearTrail();
   rows = []; sampleAcc = 0;
   sample(); pushScene(); updateReadout(); drawCharts();
@@ -460,23 +513,23 @@ function updateReadout() {
   const pr = isFinite(o.partitionR) ? Math.min(1, Math.max(0, o.partitionR)) : 0;
   const slow = sim.playing && effSpeed < sim.speed * 0.95;
   const html = `
-    <div class="row"><span class="k">model</span><span>${{ elastic: 'Elastic spring', rigid: 'Rigid body', point: 'Point mass' }[m]}</span></div>
+    <div class="row"><span class="k">${t('model')}</span><span>${t({ elastic: 'Elastic spring', rigid: 'Rigid body', point: 'Point mass' }[m])}</span></div>
     <div class="row"><span class="k">t</span><span>${f(o.t, 2)} s</span></div>
     <div class="row"><span class="k">x</span><span>${f(o.x * 100, 2)} cm</span></div>
     <div class="row"><span class="k">α</span><span>${f(o.alpha * R2D, 2)}°</span></div>
     <div class="row"><span class="k">β</span><span>${f(o.beta * R2D, 2)}°</span></div>
-    ${rigid ? `<div class="row"><span class="k">γ tilt</span><span>${f((o.tilt || 0) * R2D, 2)}°</span></div>
-    <div class="row"><span class="k" style="color:#a78bfa">ψ yaw</span><span>${f((o.yaw || 0) * R2D, 2)}°</span></div>` : ''}
+    ${rigid ? `<div class="row"><span class="k">${t('γ tilt')}</span><span>${f((o.tilt || 0) * R2D, 2)}°</span></div>
+    <div class="row"><span class="k" style="color:#a78bfa">${t('ψ yaw')}</span><span>${f((o.yaw || 0) * R2D, 2)}°</span></div>` : ''}
     <div class="row"><span class="k" style="color:#22d3ee">E_r</span><span>${f(o.Er * 1e3, 3)} mJ</span></div>
     <div class="row"><span class="k" style="color:#fbbf24">E_s</span><span>${f(o.Es * 1e3, 3)} mJ</span></div>
-    <div class="row"><span class="k" style="color:#a78bfa">${el ? 'E_c (+spring)' : 'E_c'}</span><span>${f(o.Ec * 1e3, 3)} mJ</span></div>
+    <div class="row"><span class="k" style="color:#a78bfa">${el ? t('E_c (+spring)') : 'E_c'}</span><span>${f(o.Ec * 1e3, 3)} mJ</span></div>
     ${rigid ? `<div class="row"><span class="k" style="color:#34d399">E_rot</span><span>${f((o.Erot || 0) * 1e3, 3)} mJ</span></div>` : ''}
     ${el ? `<div class="row"><span class="k" style="color:#f472b6">E_spring,kin</span><span>${f((o.EspringKin || 0) * 1e3, 3)} mJ</span></div>` : ''}
     <div class="row"><span class="k">π_r</span><span>${f(pr * 100, 0)} %</span></div>
     <div class="pbar"><i style="width:${pr * 100}%"></i></div>
-    <div class="row"><span class="k">speed</span><span>${sim.speed.toFixed(1)}×${sim.playing ? '' : ' (paused)'}</span></div>
-    ${slow ? `<div style="color:#fbbf24">running at ${effSpeed.toFixed(2)}× real time</div>` : ''}
-    ${o.slack ? '<span class="badge">SLACK</span>' : ''}`;
+    <div class="row"><span class="k">${t('speed')}</span><span>${sim.speed.toFixed(1)}×${sim.playing ? '' : ' ' + t('(paused)')}</span></div>
+    ${slow ? `<div style="color:#fbbf24">${t('running at {x}× real time', { x: effSpeed.toFixed(2) })}</div>` : ''}
+    ${o.slack ? `<span class="badge">${t('SLACK')}</span>` : ''}`;
   if (html !== lastReadoutHtml) { lastReadoutHtml = html; $('readout').innerHTML = html; }
 }
 let lastReadoutHtml = '';
@@ -492,6 +545,7 @@ function drawChartsIfDirty() { allCharts.forEach(c => { if (c.canvas !== viewCha
 let lastT = performance.now(), lastChart = 0;
 let effSpeed = 1;            // measured simulated seconds per real second (smoothed)
 const FRAME_BUDGET_MS = 12;  // max physics wall time per animation frame
+let lastLearnTick = 0;
 function frame(now) {
   requestAnimationFrame(frame);
   try {
@@ -513,6 +567,10 @@ function frame(now) {
         if (!cut && inst >= sim.speed * 0.9) effSpeed += (sim.speed - effSpeed) * 0.3;
       }
     } else effSpeed = sim.speed;
+    if (learn && now - lastLearnTick >= 250) {
+      lastLearnTick = now;
+      try { learn.engine.tick(getCtx()); } catch (e) { console.warn('learn tick', e); }
+    }
     pushScene();
     updateReadout();
     if (now - lastChart > 40) { lastChart = now; drawChartsIfDirty(); }
@@ -537,6 +595,113 @@ function renderHelpMath() {
   }, e => { katexPromise = null; $('help').dataset.math = 'raw'; console.warn('KaTeX unavailable, showing LaTeX source', e); });
 }
 
+// Spanish help body: help/es.html (inner HTML of .help-body) is fetched on demand; English stays if it cannot be loaded.
+const helpBody = document.querySelector('#help .help-body');
+const helpEn = helpBody.innerHTML; helpBody.dataset.lang = 'en';
+let helpEsPromise = null;
+async function syncHelp() {
+  const l = getLang();
+  let html = helpEn;
+  if (l === 'es') {
+    try {
+      helpEsPromise ??= fetch('help/es.html?v=8644c0b').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); });
+      const es = await helpEsPromise;
+      if (es.trim()) html = es;
+    } catch (e) { helpEsPromise = null; console.warn('Spanish help unavailable, keeping English', e); }
+  }
+  if (getLang() !== l || helpBody.dataset.lang === (html === helpEn ? 'en' : 'es')) return;
+  helpBody.innerHTML = html; helpBody.dataset.lang = html === helpEn ? 'en' : 'es';
+  delete $('help').dataset.math;
+  if ($('help').open) renderHelpMath();
+}
+
+// ---------- language ----------
+// [data-tx="text title aria-label"]: the element's English text/attributes are the keys (cached on first use).
+function applyDom(root) {
+  root.querySelectorAll('[data-tx]').forEach(el => {
+    for (const a of el.dataset.tx.split(' ')) {
+      if (a === 'text') { el._enText ??= el.textContent; el.textContent = t(el._enText); }
+      else { el._enAttr ??= {}; el._enAttr[a] ??= el.getAttribute(a); el.setAttribute(a, t(el._enAttr[a])); }
+    }
+  });
+}
+function applyLang(rebuild = true) {
+  const l = getLang(), panel = $('panel'), top = panel.scrollTop;
+  document.documentElement.lang = l;
+  document.title = t('Smartphone Elastic Pendulum — 3D Simulator');
+  applyDom(document);
+  $('lang-seg').querySelectorAll('button').forEach(b => { const on = b.dataset.lang === l; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
+  const lb = $('btn-learn'); lb.textContent = t('learn'); lb.title = t('tasks'); lb.setAttribute('aria-label', t('tasks'));
+  fillChartSel(); syncCompute();
+  if (rebuild) ui.rebuild();
+  refreshUI(); updateTuning(); syncPlayLabels(); setScanAxis(); labelCharts();
+  if (rsFn) showRs(rsFn); else showRs(rsText('Runs the full nonlinear model from the current start condition for each knob value and picks the fastest complete energy exchange.'));
+  if (nlFn) showNl(nlFn);
+  chScan.draw(); drawCharts();
+  lastReadoutHtml = ''; updateReadout();
+  panel.scrollTop = top;
+  syncHelp();
+}
+
+// ---------- guided tasks (lazy: js/learn/* load on first click) ----------
+let learn = null, learnPromise = null, setupFor = null;
+const getCtx = () => ({ params, derived, obs, sim, view1, probes, events: learnEvents, setupApplied: !!learn && setupFor === learn.engine.active });
+async function applySetup(task) {
+  const s = task.setup || {};
+  resetSearchUI();
+  if (task.model && task.model !== params.model) setParams({ model: task.model });
+  if (s.preset) { $('preset').value = s.preset; await applyPreset(s.preset); }
+  const ic = { bounce: 'icBounce', nudge: 'icNudge', swing: 'icSwing', mixed: 'icMixed' }[s.ic];
+  if (ic) actions[ic](); else if (s.ic === 'rest') applyIC({});
+  if (s.params) {
+    setParams(s.params);
+    if (Object.keys(s.params).some(k => !IC_KEYS.has(k))) $('preset').value = 'custom';
+  }
+  if (s.speed) sim.speed = s.speed;
+  if (s.window) { sim.window = s.window; allCharts.forEach(c => c.setWindow(s.window)); }
+  if (s.chart1) setChart1(s.chart1);
+  refreshUI(); restart();
+  learnEvents.length = 0; setupFor = task.id;
+}
+function reveal(item) {
+  if (Array.isArray(item)) item = item[0];
+  if (typeof item !== 'string') return false;
+  if (item[0] !== '#') return ui.reveal(item);
+  const el = document.querySelector(item); if (!el) return false;
+  document.body.classList.remove('panel-hidden');
+  for (let d = el.closest('details'); d; d = d.parentElement?.closest('details')) d.open = true;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.add('learn-pulse'); setTimeout(() => el.classList.remove('learn-pulse'), 3000);
+  return true;
+}
+const app = { getCtx, applySetup, reveal, typeset() {} };
+function memStorage() { const m = new Map(); return { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); } }; }
+function loadLearn() {
+  learnPromise ??= (async () => {
+    const [{ createLearnPanel }, { createEngine }, { TASKS }] = await Promise.all([import('./learn/panel.js?v=8644c0b'), import('./learn/engine.js?v=8644c0b'), import('./learn/tasks.js?v=8644c0b')]);
+    let storage; try { storage = window.localStorage; storage.setItem('pr-learn-probe', '1'); storage.removeItem('pr-learn-probe'); } catch { storage = memStorage(); }
+    const engine = createEngine({ tasks: TASKS, storage });
+    let lastActive = engine.active;
+    engine.onChange(() => { if (engine.active !== lastActive) { lastActive = engine.active; learnEvents.length = 0; setupFor = null; } });
+    const panel = createLearnPanel({ root: $('learn-panel'), engine, app });
+    learn = { engine, panel };
+    return learn;
+  })();
+  learnPromise.catch(e => { learnPromise = null; showError(e); });
+  return learnPromise;
+}
+async function openLearn(id) {
+  const l = await loadLearn();
+  l.panel.show();
+  if (id && id !== '1') { try { if (l.engine.get(id)) l.panel.openTask(id); } catch (e) { console.warn('unknown task', id); } }
+}
+function initLearn() {
+  const btn = $('btn-learn');
+  btn.onclick = async () => { try { (learn || await loadLearn()).panel.toggle(); } catch (e) { /* reported by loadLearn */ } };
+  const lq = new URLSearchParams(location.search).get('learn');
+  if (lq) openLearn(lq).catch(() => {});
+}
+
 // ---------- init ----------
 async function init() {
   $('btn-help').onclick = () => { $('help').showModal(); if ($('help').dataset.math !== 'ok') renderHelpMath(); };
@@ -548,14 +713,17 @@ async function init() {
   window.addEventListener('resize', onResize);
   new ResizeObserver(onResize).observe($('viewport'));
   if (new URLSearchParams(location.search).has('paused')) sim.playing = false;
-  refreshUI(); syncPlayLabels(); setScanAxis();
+  $('lang-seg').addEventListener('click', e => { const b = e.target.closest('[data-lang]'); if (b) setLang(b.dataset.lang); });
+  onLangChange(() => applyLang());
+  refreshUI(); applyLang(false);
   try {
-    const { createScene } = await import('./scene.js');
+    const { createScene } = await import('./scene.js?v=8644c0b');
     scene = createScene($('viewport'), {});
     setupPlacement();
     scene.setTrail(sim.trail); scene.setShowEquilibrium(sim.equilibrium);
   } catch (e) { showError(e); }
   restart();
+  initLearn();
   lastT = performance.now();
   requestAnimationFrame(frame);
 }
